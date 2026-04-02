@@ -1,0 +1,30 @@
+# ============================================================
+# systemd 服务文件（Linux 服务器用）
+# 安装方式：
+#   sudo cp scripts/stock-analysis.service /etc/systemd/system/
+#   编辑文件，将 YOUR_USER 和 /path/to/project 替换为实际值
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable stock-analysis
+#   sudo systemctl start stock-analysis
+# ============================================================
+
+[Unit]
+Description=Stock Analysis Scheduler (Web + Schedule)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/project
+ExecStart=/path/to/project/.venv/bin/python main.py --serve --schedule
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/path/to/project/logs/scheduler.log
+StandardError=append:/path/to/project/logs/scheduler.log
+
+# 环境变量（若 .env 不在项目目录需手动指定）
+EnvironmentFile=/path/to/project/.env
+
+[Install]
+WantedBy=multi-user.target
