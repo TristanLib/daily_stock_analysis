@@ -1386,6 +1386,15 @@ class GeminiAnalyzer:
             ttm_cash = dividend_metrics.get("ttm_cash_dividend_per_share", "N/A")
             ttm_count = dividend_metrics.get("ttm_event_count", "N/A")
             report_date = financial_report.get("report_date", "N/A")
+            def _fmt_pct(v, key):
+                val = financial_report.get(key, 'N/A')
+                if val != 'N/A' and val is not None:
+                    try:
+                        return f"{float(val):.2f}%"
+                    except (TypeError, ValueError):
+                        pass
+                return 'N/A'
+
             prompt += f"""
 ### 财报与分红（价值投资口径）
 | 指标 | 数值 | 说明 |
@@ -1394,12 +1403,18 @@ class GeminiAnalyzer:
 | 营业收入 | {financial_report.get('revenue', 'N/A')} | |
 | 归母净利润 | {financial_report.get('net_profit_parent', 'N/A')} | |
 | 经营现金流 | {financial_report.get('operating_cash_flow', 'N/A')} | |
-| ROE | {financial_report.get('roe', 'N/A')} | |
+| 每股收益（EPS） | {financial_report.get('eps', 'N/A')} | |
+| ROE（净资产收益率） | {_fmt_pct(None, 'roe')} | 衡量股东回报质量 |
+| 毛利率 | {_fmt_pct(None, 'gross_margin')} | 产品/服务盈利能力 |
+| 净利率 | {_fmt_pct(None, 'net_margin')} | 综合利润转化效率 |
+| 资产负债率 | {_fmt_pct(None, 'debt_to_assets')} | >70%需关注偿债风险 |
+| 营收同比增长 | {_fmt_pct(None, 'revenue_yoy')} | |
+| 净利润同比增长 | {_fmt_pct(None, 'net_profit_yoy')} | |
 | 近12个月每股现金分红 | {ttm_cash} | 仅现金分红、税前口径 |
 | TTM 股息率 | {ttm_yield} | 公式：近12个月每股现金分红 / 当前价格 × 100% |
 | TTM 分红事件数 | {ttm_count} | |
 
-> 若上述字段为 N/A 或缺失，请明确写“数据缺失，无法判断”，禁止编造。
+> 若上述字段为 N/A 或缺失，请明确写"数据缺失，无法判断"，禁止编造。
 """
 
         # 添加所属板块（概念/行业）数据
@@ -1559,7 +1574,7 @@ class GeminiAnalyzer:
 ⚠️ **数据缺失警告**
 由于接口限制，当前无法获取完整的实时行情和技术指标数据。
 请 **忽略上述表格中的 N/A 数据**，重点依据 **【📰 舆情情报】** 中的新闻进行基本面和情绪面分析。
-在回答技术面问题（如均线、乖离率）时，请直接说明“数据缺失，无法判断”，**严禁编造数据**。
+在回答技术面问题（如均线、乖离率）时，请直接说明"数据缺失，无法判断"，**严禁编造数据**。
 """
 
         # 明确的输出要求
@@ -1581,7 +1596,7 @@ class GeminiAnalyzer:
 """
         prompt += f"""
 ### ⚠️ 重要：输出正确的股票名称格式
-正确的股票名称格式为“股票名称（股票代码）”，例如“贵州茅台（600519）”。
+正确的股票名称格式为"股票名称（股票代码）"，例如"贵州茅台（600519）"。
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
 """
         if use_legacy_default_prompt:
@@ -1634,7 +1649,7 @@ class GeminiAnalyzer:
 - 所有 JSON 键名必须保持不变，不要翻译键名。
 - `decision_type` 必须保持为 `buy`、`hold`、`sell`。
 - 所有面向用户的人类可读文本值必须使用中文。
-- 当数据缺失时，请使用中文直接说明“{no_data_text}，无法判断”。
+- 当数据缺失时，请使用中文直接说明"{no_data_text}，无法判断"。
 """
         
         return prompt

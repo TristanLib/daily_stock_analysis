@@ -316,6 +316,9 @@ class AkshareFundamentalAdapter:
                 profit_yoy = _safe_float(_pick_by_keywords(row, ["净利润同比", "净利同比", "归母净利润同比"]))
                 roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
                 gross_margin = _safe_float(_pick_by_keywords(row, ["毛利率"]))
+                net_margin = _safe_float(_pick_by_keywords(row, ["净利率", "销售净利率", "净利润率"]))
+                debt_to_assets = _safe_float(_pick_by_keywords(row, ["资产负债率"]))
+                eps = _safe_float(_pick_by_keywords(row, ["每股收益", "每股净收益", "基本每股收益", "每股摊薄收益"]))
                 report_date = _normalize_report_date(_pick_by_keywords(row, _DIVIDEND_KEYWORD_MAP["report_date"]))
                 revenue = _safe_float(_pick_by_keywords(row, ["营业总收入", "营业收入", "营收"]))
                 net_profit_parent = _safe_float(_pick_by_keywords(row, ["归母净利润", "母公司股东净利润", "净利润"]))
@@ -334,6 +337,12 @@ class AkshareFundamentalAdapter:
                     "net_profit_parent": net_profit_parent,
                     "operating_cash_flow": operating_cash_flow,
                     "roe": roe,
+                    "gross_margin": gross_margin,
+                    "net_margin": net_margin,
+                    "debt_to_assets": debt_to_assets,
+                    "eps": eps,
+                    "revenue_yoy": revenue_yoy,
+                    "net_profit_yoy": profit_yoy,
                 }
                 if any(v is not None for v in financial_report_payload.values()):
                     result["earnings"]["financial_report"] = financial_report_payload
