@@ -15,6 +15,7 @@ FastAPI 应用工厂模块
     app = create_app()
 """
 
+import logging
 import mimetypes
 import os
 from contextlib import asynccontextmanager
@@ -22,22 +23,51 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from api.v1 import api_v1_router
+from api.webhook import router as telegram_webhook_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.services.system_config_service import SystemConfigService
+
+logger = logging.getLogger(__name__)
+
+_TELEGRAM_WEBHOOK_URL = "https://stock.urnpc.com/webhook/telegram"
 
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
     app.state.system_config_service = SystemConfigService()
+
+    # Register Telegram webhook if configured
+    from src.config import get_config as _get_config
+    _cfg = _get_config()
+    if _cfg.telegram_bot_token and _cfg.telegram_webhook_secret:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{_cfg.telegram_bot_token}/setWebhook",
+                    json={
+                        "url": _TELEGRAM_WEBHOOK_URL,
+                        "secret_token": _cfg.telegram_webhook_secret,
+                        "allowed_updates": ["message"],
+                    },
+                )
+                data = resp.json()
+                if data.get("ok"):
+                    logger.info("Telegram webhook registered: %s", _TELEGRAM_WEBHOOK_URL)
+                else:
+                    logger.warning("Telegram setWebhook failed: %s", data.get("description"))
+        except Exception as exc:
+            logger.warning("Could not register Telegram webhook: %s", exc)
+
     try:
         yield
     finally:
@@ -112,6 +142,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # ============================================================
     
     app.include_router(api_v1_router)
+    app.include_router(telegram_webhook_router)
     add_error_handlers(app)
     
     # ============================================================
