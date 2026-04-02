@@ -930,6 +930,35 @@ def main() -> int:
                         "name": "data_cleanup",
                     })
 
+            # 每日选股扫描（收盘后 15:30 执行）
+            def _screener_task():
+                try:
+                    from src.services.stock_screener import StockScreener
+                    from src.notification_sender.telegram_sender import TelegramSender
+                    from src.storage import get_db
+                    _runtime = _reload_runtime_config()
+                    _tg = TelegramSender(_runtime) if (
+                        _runtime.telegram_bot_token and _runtime.telegram_chat_id
+                    ) else None
+                    screener = StockScreener(
+                        config=_runtime,
+                        fetcher_manager=fetcher_manager,
+                        db=get_db(),
+                        telegram_sender=_tg,
+                    )
+                    screener.run_daily_scan()
+                except Exception as _e:
+                    logger.error("每日选股扫描失败: %s", _e)
+                    import traceback
+                    logger.debug(traceback.format_exc())
+
+            try:
+                import schedule as _schedule_lib
+                _schedule_lib.every().day.at("15:30").do(_screener_task)
+                logger.info("已注册每日选股任务：每日 15:30 执行（UTC）")
+            except Exception as _e:
+                logger.warning("注册每日选股任务失败: %s", _e)
+
             if getattr(config, 'agent_event_monitor_enabled', False):
                 from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
 
