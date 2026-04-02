@@ -620,6 +620,26 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class ScreenerResult(Base):
+    """每日选股扫描结果"""
+    __tablename__ = 'screener_results'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scan_date = Column(Date, nullable=False, index=True)
+    stock_code = Column(String(16), nullable=False)
+    stock_name = Column(String(64))
+    tech_score = Column(Float)
+    fund_score = Column(Float)
+    total_score = Column(Float)
+    rank = Column(Integer)
+    reasons = Column(String(512))
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('scan_date', 'stock_code', name='uq_screener_date_code'),
+    )
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -1934,6 +1954,60 @@ class DatabaseManager:
             ],
         }
 
+    def save_screener_results(self, results: list, scan_date) -> None:
+        """Save or update screener results for a given date (upsert by date+code)."""
+        import json
+        with self.get_session() as session:
+            for r in results:
+                existing = session.query(ScreenerResult).filter_by(
+                    scan_date=scan_date, stock_code=r.stock_code
+                ).first()
+                reasons_str = json.dumps(r.reasons, ensure_ascii=False) if r.reasons else "[]"
+                if existing:
+                    existing.stock_name = r.stock_name
+                    existing.tech_score = r.tech_score
+                    existing.fund_score = r.fund_score
+                    existing.total_score = r.total_score
+                    existing.reasons = reasons_str
+                else:
+                    session.add(ScreenerResult(
+                        scan_date=scan_date,
+                        stock_code=r.stock_code,
+                        stock_name=r.stock_name,
+                        tech_score=r.tech_score,
+                        fund_score=r.fund_score,
+                        total_score=r.total_score,
+                        reasons=reasons_str,
+                    ))
+            session.commit()
+
+    def get_top_screener_results(self, scan_date, limit: int = 10) -> list:
+        """Return top N screener results for a date, sorted by total_score desc."""
+        import json
+        from src.services.screener_scorer import ScreenerResult as ScorerResult
+        with self.get_session() as session:
+            rows = (
+                session.query(ScreenerResult)
+                .filter_by(scan_date=scan_date)
+                .order_by(ScreenerResult.total_score.desc())
+                .limit(limit)
+                .all()
+            )
+            results = []
+            for row in rows:
+                try:
+                    reasons = json.loads(row.reasons or "[]")
+                except Exception:
+                    reasons = []
+                results.append(ScorerResult(
+                    stock_code=row.stock_code,
+                    stock_name=row.stock_name or "",
+                    tech_score=row.tech_score or 0.0,
+                    fund_score=row.fund_score or 0.0,
+                    total_score=row.total_score or 0.0,
+                    reasons=reasons,
+                ))
+            return results
 
     def purge_old_data(self, retention_days: int) -> Dict[str, int]:
         """
