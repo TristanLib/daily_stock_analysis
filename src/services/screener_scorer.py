@@ -47,8 +47,9 @@ class ScreenerScorer:
         else:
             ma_score = 50.0
 
-        # 15%: volume status
-        vol = getattr(trend_result, 'volume_status', '') or ''
+        # 15%: volume status (may be VolumeStatus enum or string)
+        vol_raw = getattr(trend_result, 'volume_status', '')
+        vol = vol_raw.value if hasattr(vol_raw, 'value') else (vol_raw or '')
         if '放量' in vol:
             vol_score = 100.0
         elif '缩量回调' in vol or '缩量' in vol:
