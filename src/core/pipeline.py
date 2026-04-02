@@ -310,9 +310,13 @@ class StockAnalysisPipeline:
                     # Issue #234: Augment with realtime for intraday MA calculation
                     if self.config.enable_realtime_quote and realtime_quote:
                         df = self._augment_historical_with_realtime(df, realtime_quote, code)
-                    trend_result = self.trend_analyzer.analyze(df, code)
+
+                    # 获取大盘指数数据用于个股强弱计算
+                    df_index = self._fetch_market_index_df(code, start_date, end_date)
+                    trend_result = self.trend_analyzer.analyze(df, code, df_index=df_index)
+                    rs_info = f", 个股强弱={trend_result.rs_signal}({trend_result.rs_today:+.2f}pct)" if trend_result.rs_signal else ""
                     logger.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
-                              f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
+                              f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}{rs_info}")
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
 
@@ -939,6 +943,49 @@ class StockAnalysisPipeline:
             return "短期走弱 🔽"
         else:
             return "震荡整理 ↔️"
+
+    # 各市场对应的代表性大盘指数代码
+    _INDEX_CODE_MAP = {
+        'cn': '000001',   # 上证指数
+        'hk': 'hk00388',  # 恒生指数 ETF（近似，实际恒指无直接行情接口）
+        'us': 'SPY',      # 标普500 ETF
+    }
+
+    def _fetch_market_index_df(
+        self, stock_code: str, start_date: Any, end_date: Any
+    ) -> Optional[pd.DataFrame]:
+        """
+        获取与 stock_code 同市场的大盘指数历史数据，用于个股相对强弱计算。
+        失败时静默返回 None，不影响主流程。
+        """
+        try:
+            from data_provider.base import normalize_stock_code as _norm
+            from data_provider.us_index_mapping import is_us_stock_code
+            from src.core.trading_calendar import get_market_for_stock
+
+            mkt = get_market_for_stock(_norm(stock_code)) or 'cn'
+            if is_us_stock_code(stock_code):
+                mkt = 'us'
+
+            index_code = self._INDEX_CODE_MAP.get(mkt, '000001')
+
+            # 优先从数据库取缓存，减少网络请求
+            cached = self.db.get_data_range(index_code, start_date, end_date)
+            if cached and len(cached) >= 5:
+                return pd.DataFrame([bar.to_dict() for bar in cached])
+
+            # 缓存不足则从数据源拉取
+            df_idx, _ = self.fetcher_manager.get_daily_data(index_code, days=90)
+            if df_idx is not None and not df_idx.empty:
+                # 异步存入缓存供下次使用
+                try:
+                    self.db.save_daily_data(df_idx, index_code, 'index_cache')
+                except Exception:
+                    pass
+                return df_idx
+        except Exception as e:
+            logger.debug(f"获取大盘指数数据失败（不影响主流程）: {e}")
+        return None
 
     def _augment_historical_with_realtime(
         self, df: pd.DataFrame, realtime_quote: Any, code: str

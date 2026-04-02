@@ -18,7 +18,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from enum import Enum
 
 import pandas as pd
@@ -126,6 +126,13 @@ class TrendAnalysisResult:
     rsi_status: RSIStatus = RSIStatus.NEUTRAL
     rsi_signal: str = ""              # RSI 信号描述
 
+    # 个股强弱（相对大盘表现）
+    rs_today: float = 0.0           # 今日个股涨跌幅 - 大盘涨跌幅（百分点差）
+    rs_5d: float = 0.0              # 近5日累计涨幅 / 大盘累计涨幅（比值，>1 代表跑赢）
+    rs_20d: float = 0.0             # 近20日累计涨幅 / 大盘累计涨幅（比值）
+    rs_signal: str = ""             # 强势 / 弱势 / 中性
+    rs_trend: str = ""              # 强弱趋势描述
+
     # 买入信号
     buy_signal: BuySignal = BuySignal.WAIT
     signal_score: int = 0            # 综合评分 0-100
@@ -165,6 +172,11 @@ class TrendAnalysisResult:
             'rsi_24': self.rsi_24,
             'rsi_status': self.rsi_status.value,
             'rsi_signal': self.rsi_signal,
+            'rs_today': self.rs_today,
+            'rs_5d': self.rs_5d,
+            'rs_20d': self.rs_20d,
+            'rs_signal': self.rs_signal,
+            'rs_trend': self.rs_trend,
         }
 
 
@@ -202,27 +214,28 @@ class StockTrendAnalyzer:
         """初始化分析器"""
         pass
     
-    def analyze(self, df: pd.DataFrame, code: str) -> TrendAnalysisResult:
+    def analyze(self, df: pd.DataFrame, code: str, df_index: Optional[pd.DataFrame] = None) -> TrendAnalysisResult:
         """
         分析股票趋势
-        
+
         Args:
             df: 包含 OHLCV 数据的 DataFrame
             code: 股票代码
-            
+            df_index: 大盘指数 DataFrame（可选），用于计算个股相对强弱
+
         Returns:
             TrendAnalysisResult 分析结果
         """
         result = TrendAnalysisResult(code=code)
-        
+
         if df is None or df.empty or len(df) < 20:
             logger.warning(f"{code} 数据不足，无法进行趋势分析")
             result.risk_factors.append("数据不足，无法完成分析")
             return result
-        
+
         # 确保数据按日期排序
         df = df.sort_values('date').reset_index(drop=True)
-        
+
         # 计算均线
         df = self._calculate_mas(df)
 
@@ -258,6 +271,10 @@ class StockTrendAnalyzer:
 
         # 7. 生成买入信号
         self._generate_signal(result)
+
+        # 8. 个股相对强弱（需要大盘数据）
+        if df_index is not None and not df_index.empty:
+            self._analyze_relative_strength(df, df_index, result)
 
         return result
     
@@ -743,6 +760,81 @@ class StockTrendAnalyzer:
         else:
             result.buy_signal = BuySignal.SELL
     
+    def _analyze_relative_strength(
+        self, df_stock: pd.DataFrame, df_index: pd.DataFrame, result: TrendAnalysisResult
+    ) -> None:
+        """
+        计算个股相对大盘的强弱。
+
+        指标定义：
+        - rs_today: 今日个股涨跌幅 - 大盘涨跌幅（百分点差，正值=跑赢大盘）
+        - rs_5d:    近5日累计涨幅 / 大盘累计涨幅（比值，>1=跑赢，<1=跑输）
+        - rs_20d:   近20日同上
+        """
+        try:
+            df_index = df_index.sort_values('date').reset_index(drop=True)
+
+            # 对齐日期：取两者共同交易日
+            stock_dates = set(df_stock['date'].astype(str))
+            index_dates = set(df_index['date'].astype(str))
+            common_dates = sorted(stock_dates & index_dates)
+            if len(common_dates) < 2:
+                return
+
+            s = df_stock[df_stock['date'].astype(str).isin(common_dates)].copy().reset_index(drop=True)
+            idx = df_index[df_index['date'].astype(str).isin(common_dates)].copy().reset_index(drop=True)
+
+            # 今日相对强弱（百分点差）
+            s_chg_today = (s['close'].iloc[-1] / s['close'].iloc[-2] - 1) * 100
+            i_chg_today = (idx['close'].iloc[-1] / idx['close'].iloc[-2] - 1) * 100
+            result.rs_today = round(s_chg_today - i_chg_today, 2)
+
+            # 近5日相对强弱比值
+            if len(common_dates) >= 5:
+                s_ret_5d = s['close'].iloc[-1] / s['close'].iloc[-5] - 1
+                i_ret_5d = idx['close'].iloc[-1] / idx['close'].iloc[-5] - 1
+                # 避免除零：大盘5日涨幅为0时用差值
+                if abs(i_ret_5d) > 0.001:
+                    result.rs_5d = round(s_ret_5d / abs(i_ret_5d) * (1 if i_ret_5d > 0 else -1), 2)
+                else:
+                    result.rs_5d = round((s_ret_5d - i_ret_5d) * 100, 2)
+
+            # 近20日相对强弱比值
+            if len(common_dates) >= 20:
+                s_ret_20d = s['close'].iloc[-1] / s['close'].iloc[-20] - 1
+                i_ret_20d = idx['close'].iloc[-1] / idx['close'].iloc[-20] - 1
+                if abs(i_ret_20d) > 0.001:
+                    result.rs_20d = round(s_ret_20d / abs(i_ret_20d) * (1 if i_ret_20d > 0 else -1), 2)
+                else:
+                    result.rs_20d = round((s_ret_20d - i_ret_20d) * 100, 2)
+
+            # 综合判断
+            strong_count = sum([
+                result.rs_today > 0,
+                result.rs_5d > 1.0,
+                result.rs_20d > 1.0,
+            ])
+            if strong_count >= 2:
+                result.rs_signal = "强势"
+            elif strong_count == 0:
+                result.rs_signal = "弱势"
+            else:
+                result.rs_signal = "中性"
+
+            # 趋势描述
+            parts = []
+            if result.rs_today > 0:
+                parts.append(f"今日跑赢大盘{abs(result.rs_today):.2f}个百分点")
+            else:
+                parts.append(f"今日跑输大盘{abs(result.rs_today):.2f}个百分点")
+            if result.rs_5d != 0:
+                label = "跑赢" if result.rs_5d > 1 else "跑输"
+                parts.append(f"5日{label}大盘{abs(result.rs_5d):.2f}倍")
+            result.rs_trend = "；".join(parts)
+
+        except Exception as e:
+            logger.debug(f"{result.code} 个股强弱计算失败: {e}")
+
     def format_analysis(self, result: TrendAnalysisResult) -> str:
         """
         格式化分析结果为文本
@@ -785,6 +877,16 @@ class StockTrendAnalyzer:
             f"🎯 操作建议: {result.buy_signal.value}",
             f"   综合评分: {result.signal_score}/100",
         ]
+
+        if result.rs_signal:
+            lines += [
+                f"",
+                f"📊 个股强弱: {result.rs_signal}",
+                f"   今日 vs 大盘: {result.rs_today:+.2f}个百分点",
+                f"   5日相对强弱: {result.rs_5d:.2f}x",
+                f"   20日相对强弱: {result.rs_20d:.2f}x",
+                f"   {result.rs_trend}",
+            ]
 
         if result.signal_reasons:
             lines.append(f"")
