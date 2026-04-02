@@ -338,11 +338,11 @@ class StockAnalysisPipeline:
             if self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
-                # 使用多维度搜索（最多5次搜索）
+                # 使用多维度搜索（最多6次搜索：新闻+机构+风险+业绩+行业+舆情概念）
                 intel_results = self.search_service.search_comprehensive_intel(
                     stock_code=code,
                     stock_name=stock_name,
-                    max_searches=5
+                    max_searches=6
                 )
 
                 # 格式化情报报告
@@ -539,6 +539,12 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+                # 个股相对强弱（vs 大盘）
+                'rs_today': trend_result.rs_today,
+                'rs_5d': trend_result.rs_5d,
+                'rs_20d': trend_result.rs_20d,
+                'rs_signal': trend_result.rs_signal,
+                'rs_trend': trend_result.rs_trend,
             }
 
         # Issue #234: Override today with realtime OHLC + trend MA for intraday analysis

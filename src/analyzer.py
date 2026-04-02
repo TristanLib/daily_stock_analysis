@@ -1402,6 +1402,31 @@ class GeminiAnalyzer:
 > 若上述字段为 N/A 或缺失，请明确写“数据缺失，无法判断”，禁止编造。
 """
 
+        # 添加所属板块（概念/行业）数据
+        belong_boards = (
+            fundamental_context.get("belong_boards")
+            if isinstance(fundamental_context, dict)
+            else None
+        )
+        if not belong_boards:
+            belong_boards = context.get("belong_boards")
+        if isinstance(belong_boards, list) and belong_boards:
+            concept_boards = [b for b in belong_boards if isinstance(b, dict) and b.get("type") == "concept"]
+            industry_boards = [b for b in belong_boards if isinstance(b, dict) and b.get("type") != "concept"]
+            board_lines = []
+            if concept_boards:
+                board_lines.append("**概念板块**：" + "、".join(b.get("name", "") for b in concept_boards[:10]))
+            if industry_boards:
+                board_lines.append("**行业/地域板块**：" + "、".join(b.get("name", "") for b in industry_boards[:5]))
+            if not board_lines:
+                board_lines.append("、".join(b.get("name", "") for b in belong_boards[:10]))
+            prompt += f"""
+### 所属板块（概念与行业）
+{chr(10).join(board_lines)}
+
+> 分析时请结合概念板块当前热度判断该股是否处于市场关注的主题方向中。
+"""
+
         # 添加筹码分布数据
         if 'chip' in context:
             chip = context['chip']
@@ -1434,6 +1459,10 @@ class GeminiAnalyzer:
 | 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | 系统信号 | {trend.get('buy_signal', unknown_text)} | |
 | 系统评分 | {trend.get('signal_score', 0)}/100 | |
+| **个股强弱** | **{trend.get('rs_signal', unknown_text)}** | {trend.get('rs_trend', '')} |
+| 今日vs大盘 | {trend.get('rs_today', 0):+.2f}个百分点 | 正值=跑赢大盘 |
+| 5日相对强弱 | {trend.get('rs_5d', 0):.2f}x | >1跑赢，<1跑输 |
+| 20日相对强弱 | {trend.get('rs_20d', 0):.2f}x | 中期强弱判断 |
 
 #### 系统分析理由
 **买入理由**：
@@ -1460,6 +1489,10 @@ class GeminiAnalyzer:
 | 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | 系统信号 | {trend.get('buy_signal', unknown_text)} | |
 | 系统评分 | {trend.get('signal_score', 0)}/100 | |
+| **个股强弱** | **{trend.get('rs_signal', unknown_text)}** | {trend.get('rs_trend', '')} |
+| 今日vs大盘 | {trend.get('rs_today', 0):+.2f}个百分点 | 正值=跑赢大盘 |
+| 5日相对强弱 | {trend.get('rs_5d', 0):.2f}x | >1跑赢，<1跑输 |
+| 20日相对强弱 | {trend.get('rs_20d', 0):.2f}x | 中期强弱判断 |
 
 #### 系统分析理由
 **支持因素**：
@@ -1468,7 +1501,7 @@ class GeminiAnalyzer:
 **风险因素**：
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
 """
-        
+
         # 添加昨日对比数据
         if 'yesterday' in context:
             volume_change = context.get('volume_change_ratio', 'N/A')

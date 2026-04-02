@@ -2879,6 +2879,16 @@ class SearchService:
                     'tavily_topic': None,
                     'strict_freshness': False,
                 },
+                {
+                    'name': 'sentiment_concept',
+                    'query': (
+                        f"{stock_name} 市场情绪 资金流向 持仓"
+                        if is_index_etf else f"{stock_name} 股吧 东方财富 概念板块 热点主题 散户情绪 机构动向"
+                    ),
+                    'desc': '舆情与概念',
+                    'tavily_topic': 'news',
+                    'strict_freshness': True,
+                },
             ]
         
         search_days = self._effective_news_window_days()
