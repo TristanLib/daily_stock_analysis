@@ -901,6 +901,35 @@ def main() -> int:
                 run_full_analysis(runtime_config, args, scheduled_stock_codes)
 
             background_tasks = []
+
+            # 定时数据清理（每日凌晨，保留 data_retention_days 天）
+            _retention_days = getattr(config, 'data_retention_days', 60)
+            _cleanup_hour = getattr(config, 'data_cleanup_hour', '03:00')
+            if _retention_days > 0:
+                from src.scheduler import Scheduler as _Sched
+                _cleanup_sched = _Sched.__new__(_Sched)  # 仅用于时间验证
+
+                def _data_cleanup_task():
+                    from src.storage import get_db
+                    try:
+                        get_db().purge_old_data(_retention_days)
+                    except Exception as _e:
+                        logger.warning("定时数据清理失败: %s", _e)
+
+                # 每 24 小时执行一次，通过 schedule 库注册到每日固定时间
+                try:
+                    import schedule as _schedule_lib
+                    _schedule_lib.every().day.at(_cleanup_hour).do(_data_cleanup_task)
+                    logger.info("已注册数据清理任务：每日 %s 执行，保留最近 %d 天", _cleanup_hour, _retention_days)
+                except Exception as _e:
+                    logger.warning("注册数据清理任务失败，回退为每24h后台任务: %s", _e)
+                    background_tasks.append({
+                        "task": _data_cleanup_task,
+                        "interval_seconds": 86400,
+                        "run_immediately": False,
+                        "name": "data_cleanup",
+                    })
+
             if getattr(config, 'agent_event_monitor_enabled', False):
                 from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
 

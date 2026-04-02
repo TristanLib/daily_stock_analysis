@@ -1935,6 +1935,71 @@ class DatabaseManager:
         }
 
 
+    def purge_old_data(self, retention_days: int) -> Dict[str, int]:
+        """
+        清理超过保留期的历史数据。
+
+        删除以下表中早于 retention_days 天的记录：
+        - stock_daily      按 date 列
+        - analysis_history 按 created_at 列（级联删除关联的 backtest_results）
+        - news_intel       按 fetched_at 列
+        - fundamental_snapshot 按 created_at 列
+
+        Args:
+            retention_days: 保留天数，早于此天数的数据将被删除（最小 7）
+
+        Returns:
+            各表实际删除行数的字典
+        """
+        days = max(7, int(retention_days))
+        cutoff = datetime.now() - timedelta(days=days)
+        cutoff_date = cutoff.date()
+        deleted: Dict[str, int] = {}
+
+        with self.session_scope() as session:
+            # stock_daily：按 date 列（Date 类型）
+            r = session.execute(
+                delete(StockDaily).where(StockDaily.date < cutoff_date)
+            )
+            deleted["stock_daily"] = r.rowcount or 0
+
+            # analysis_history：先找出要删的 id，级联删 backtest_results
+            old_ids_rows = session.execute(
+                select(AnalysisHistory.id).where(AnalysisHistory.created_at < cutoff)
+            ).fetchall()
+            old_ids = [row[0] for row in old_ids_rows]
+            if old_ids:
+                session.execute(
+                    delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(old_ids))
+                )
+                r = session.execute(
+                    delete(AnalysisHistory).where(AnalysisHistory.id.in_(old_ids))
+                )
+                deleted["analysis_history"] = r.rowcount or 0
+            else:
+                deleted["analysis_history"] = 0
+
+            # news_intel：按 fetched_at 列
+            r = session.execute(
+                delete(NewsIntel).where(NewsIntel.fetched_at < cutoff)
+            )
+            deleted["news_intel"] = r.rowcount or 0
+
+            # fundamental_snapshot：按 created_at 列
+            r = session.execute(
+                delete(FundamentalSnapshot).where(FundamentalSnapshot.created_at < cutoff)
+            )
+            deleted["fundamental_snapshot"] = r.rowcount or 0
+
+        logger.info(
+            "数据清理完成（保留%d天，截止%s）：%s",
+            days,
+            cutoff_date.isoformat(),
+            ", ".join(f"{k}={v}" for k, v in deleted.items()),
+        )
+        return deleted
+
+
 # 便捷函数
 def get_db() -> DatabaseManager:
     """获取数据库管理器实例的快捷方式"""

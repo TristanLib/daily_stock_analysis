@@ -631,6 +631,10 @@ class Config:
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
 
+    # === 数据保留配置 ===
+    data_retention_days: int = 60           # 历史数据保留天数，0 表示不清理
+    data_cleanup_hour: str = "03:00"        # 每日清理执行时间（HH:MM，本地时间）
+
     # === 回测配置 ===
     backtest_enabled: bool = True
     backtest_eval_window_days: int = 10
@@ -1258,6 +1262,8 @@ class Config:
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
+            data_retention_days=parse_env_int(os.getenv('DATA_RETENTION_DAYS'), 60, field_name='DATA_RETENTION_DAYS', minimum=0),
+            data_cleanup_hour=os.getenv('DATA_CLEANUP_HOUR', '03:00'),
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
             backtest_eval_window_days=parse_env_int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS'), 10, field_name='BACKTEST_EVAL_WINDOW_DAYS', minimum=1),
             backtest_min_age_days=parse_env_int(os.getenv('BACKTEST_MIN_AGE_DAYS'), 14, field_name='BACKTEST_MIN_AGE_DAYS', minimum=1),
