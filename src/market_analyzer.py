@@ -188,7 +188,7 @@ class MarketAnalyzer:
             ("NG=F",      "天然气(USD/MMBtu)"),
             ("HG=F",      "铜(USD/磅)"),
             ("SI=F",      "白银(USD/oz)"),
-            ("DX=F",      "美元指数"),
+            ("DX-Y.NYB",  "美元指数"),
         ]
         indices = []
         try:
