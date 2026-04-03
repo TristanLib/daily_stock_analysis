@@ -662,6 +662,8 @@ class Config:
     market_review_region: str = "cn"
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
+    # 大宗商品日报：在大盘复盘后追加黄金/原油/天然气/铜/白银/美元指数分析
+    commodity_review_enabled: bool = False
 
     # === 实时行情增强数据配置 ===
     # 实时行情开关（关闭后使用历史收盘价进行分析）
@@ -1294,6 +1296,7 @@ class Config:
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
+            commodity_review_enabled=os.getenv('COMMODITY_REVIEW_ENABLED', 'false').lower() == 'true',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=parse_env_int(os.getenv('WEBUI_PORT'), 8000, field_name='WEBUI_PORT', minimum=1, maximum=65535),

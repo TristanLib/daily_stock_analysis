@@ -54,8 +54,24 @@ US_PROFILE = MarketProfile(
 )
 
 
+COMMODITY_PROFILE = MarketProfile(
+    region="commodity",
+    mood_index_code="GC=F",
+    news_queries=[
+        "黄金 金价 走势",
+        "原油 油价 OPEC",
+        "大宗商品 铜 天然气",
+    ],
+    prompt_index_hint="分析黄金、原油、天然气、铜、白银及美元指数的价格走势与驱动逻辑",
+    has_market_stats=False,
+    has_sector_rankings=False,
+)
+
+
 def get_profile(region: str) -> MarketProfile:
     """根据 region 返回对应的 MarketProfile"""
     if region == "us":
         return US_PROFILE
+    if region == "commodity":
+        return COMMODITY_PROFILE
     return CN_PROFILE

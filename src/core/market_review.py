@@ -56,6 +56,8 @@ def run_market_review(
     if region not in ('cn', 'us', 'both'):
         region = 'cn'
 
+    commodity_enabled = getattr(config, 'commodity_review_enabled', False)
+
     try:
         if region == 'both':
             # 顺序执行 A 股 + 美股，合并报告
@@ -85,7 +87,23 @@ def run_market_review(
                 region=region,
             )
             review_report = market_analyzer.run_daily_review()
-        
+
+        # 大宗商品日报（附加在主复盘之后）
+        if commodity_enabled:
+            try:
+                logger.info("生成大宗商品日报...")
+                commodity_analyzer = MarketAnalyzer(
+                    search_service=search_service,
+                    analyzer=analyzer,
+                    region='commodity',
+                )
+                commodity_report = commodity_analyzer.run_daily_review()
+                if commodity_report:
+                    separator = "\n\n---\n\n> 以下为大宗商品日报\n\n"
+                    review_report = (review_report or '') + separator + commodity_report
+            except Exception as e:
+                logger.error("大宗商品日报生成失败: %s", e)
+
         if review_report:
             # 保存报告到文件
             date_str = datetime.now().strftime('%Y%m%d')

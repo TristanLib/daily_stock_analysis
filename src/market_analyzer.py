@@ -107,7 +107,7 @@ class MarketAnalyzer:
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
-        self.region = region if region in ("cn", "us") else "cn"
+        self.region = region if region in ("cn", "us", "commodity") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
 
@@ -121,8 +121,11 @@ class MarketAnalyzer:
         today = datetime.now().strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
         
-        # 1. 获取主要指数行情（按 region 切换 A 股/美股）
-        overview.indices = self._get_main_indices()
+        # 1. 获取主要指数行情（按 region 切换 A 股/美股/大宗商品）
+        if self.region == "commodity":
+            overview.indices = self._get_commodity_indices()
+        else:
+            overview.indices = self._get_main_indices()
 
         # 2. 获取涨跌统计（A 股有，美股无等效数据）
         if self.profile.has_market_stats:
@@ -174,6 +177,54 @@ class MarketAnalyzer:
         except Exception as e:
             logger.error(f"[大盘] 获取指数行情失败: {e}")
 
+        return indices
+
+    def _get_commodity_indices(self) -> List[MarketIndex]:
+        """通过 yfinance 获取大宗商品期货行情（黄金/原油/天然气/铜/白银/美元指数）"""
+        # (yfinance ticker, display name)
+        commodity_mapping = [
+            ("GC=F",      "黄金(USD/oz)"),
+            ("CL=F",      "WTI原油(USD/桶)"),
+            ("NG=F",      "天然气(USD/MMBtu)"),
+            ("HG=F",      "铜(USD/磅)"),
+            ("SI=F",      "白银(USD/oz)"),
+            ("DX=F",      "美元指数"),
+        ]
+        indices = []
+        try:
+            import yfinance as yf
+            logger.info("[大宗商品] 获取期货行情...")
+            for yf_code, name in commodity_mapping:
+                try:
+                    ticker = yf.Ticker(yf_code)
+                    hist = ticker.history(period="2d")
+                    if hist.empty:
+                        continue
+                    today_row = hist.iloc[-1]
+                    prev_row = hist.iloc[-2] if len(hist) > 1 else today_row
+                    price = float(today_row["Close"])
+                    prev_close = float(prev_row["Close"])
+                    change = price - prev_close
+                    change_pct = (change / prev_close * 100) if prev_close else 0.0
+                    indices.append(MarketIndex(
+                        code=yf_code,
+                        name=name,
+                        current=price,
+                        change=change,
+                        change_pct=change_pct,
+                        open=float(today_row["Open"]),
+                        high=float(today_row["High"]),
+                        low=float(today_row["Low"]),
+                        prev_close=prev_close,
+                        volume=float(today_row["Volume"]),
+                        amount=0.0,
+                    ))
+                    logger.debug("[大宗商品] %s: %.4f (%+.2f%%)", name, price, change_pct)
+                except Exception as e:
+                    logger.warning("[大宗商品] 获取 %s 失败: %s", name, e)
+            logger.info("[大宗商品] 获取到 %d 个品种行情", len(indices))
+        except Exception as e:
+            logger.error("[大宗商品] 行情获取失败: %s", e)
         return indices
 
     def _get_market_statistics(self, overview: MarketOverview):
@@ -307,11 +358,16 @@ class MarketAnalyzer:
     
     def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:
         """Inject structured data tables into the corresponding LLM prose sections."""
-        import re
+        indices_block = self._build_indices_block(overview)
+
+        if self.region == "commodity":
+            # Inject commodity price table after "### 一、行情概览"
+            if indices_block:
+                review = self._insert_after_section(review, r'###\s*一、行情概览', indices_block)
+            return review
 
         # Build data blocks
         stats_block = self._build_stats_block(overview)
-        indices_block = self._build_indices_block(overview)
         sector_block = self._build_sector_block(overview)
 
         # Inject market stats after "### 一、市场总结" section (before next ###)
@@ -364,6 +420,12 @@ class MarketAnalyzer:
         """构建指数行情表格（不含振幅）"""
         if not overview.indices:
             return ""
+        if self.region == "commodity":
+            lines = ["| 品种 | 最新价 | 涨跌幅 |", "|------|--------|--------|"]
+            for idx in overview.indices:
+                arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+                lines.append(f"| {idx.name} | {idx.current:.4g} | {arrow} {idx.change_pct:+.2f}% |")
+            return "\n".join(lines)
         lines = [
             "| 指数 | 最新 | 涨跌幅 | 成交额(亿) |",
             "|------|------|--------|-----------|"]
@@ -397,8 +459,79 @@ class MarketAnalyzer:
             lines.append(f"> 💧 领跌: {bot}")
         return "\n".join(lines)
 
+    def _build_commodity_prompt(self, overview: MarketOverview, news: List) -> str:
+        """构建大宗商品日报 Prompt"""
+        prices_text = ""
+        for idx in overview.indices:
+            direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
+            prices_text += f"- {idx.name}: {idx.current:.4g} ({direction}{abs(idx.change_pct):.2f}%)\n"
+
+        news_text = ""
+        for i, n in enumerate(news[:6], 1):
+            title = n.title[:50] if hasattr(n, 'title') else n.get('title', '')[:50]
+            snippet = n.snippet[:100] if hasattr(n, 'snippet') else n.get('snippet', '')[:100]
+            news_text += f"{i}. {title}\n   {snippet}\n"
+
+        prices_placeholder = prices_text if prices_text else "暂无行情数据（接口异常）"
+        news_placeholder = news_text if news_text else "暂无相关新闻"
+        data_hint = (
+            "注意：行情数据获取失败，请主要依据市场新闻进行定性分析，不要编造具体价格。"
+            if not prices_text else ""
+        )
+
+        return f"""你是一位专业的大宗商品分析师，请根据以下数据生成一份简洁的大宗商品日报。
+
+【重要】输出要求：
+- 必须输出纯 Markdown 文本格式
+- 禁止输出 JSON 格式
+- 禁止输出代码块
+- emoji 仅在标题处少量使用（每个标题最多1个）
+
+---
+
+# 今日大宗商品数据
+
+## 日期
+{overview.date}
+
+## 主要品种行情
+{prices_placeholder}
+
+## 市场新闻
+{news_placeholder}
+
+{data_hint}
+
+{self.strategy.to_prompt_block()}
+
+---
+
+# 输出格式模板（请严格按此格式输出）
+
+## {overview.date} 大宗商品日报
+
+### 一、行情概览
+（2-3句话概括今日黄金、原油等主要品种整体涨跌情况）
+
+### 二、驱动分析
+（{self.profile.prompt_index_hint}；重点解读美元指数、实际利率变化对贵金属的影响，OPEC产能与供需对原油的影响）
+
+### 三、品种信号
+（分别给出黄金/原油/工业金属的短期偏多/偏空/中性判断，各一两句，简明扼要）
+
+### 四、风险提示
+（需要关注的宏观或地缘风险点）
+
+---
+
+请直接输出日报内容，不要输出其他说明文字。
+"""
+
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
+        if self.region == "commodity":
+            return self._build_commodity_prompt(overview, news)
+
         # 指数行情信息（简洁格式，不用emoji）
         indices_text = ""
         for idx in overview.indices:
@@ -595,6 +728,17 @@ Output the report content directly, no extra commentary.
     
     def _generate_template_review(self, overview: MarketOverview, news: List) -> str:
         """使用模板生成复盘报告（无大模型时的备选方案）"""
+        if self.region == "commodity":
+            lines = [f"## {overview.date} 大宗商品日报\n", "### 一、行情概览\n"]
+            for idx in overview.indices:
+                direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
+                lines.append(f"- **{idx.name}**: {idx.current:.4g} ({direction}{abs(idx.change_pct):.2f}%)")
+            lines.append("\n### 二、驱动分析\n暂无 AI 分析（AI 分析器不可用）。")
+            lines.append("\n### 三、品种信号\n暂无。")
+            lines.append("\n### 四、风险提示\n市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。")
+            lines.append(f"\n---\n*日报时间: {datetime.now().strftime('%H:%M')}*")
+            return "\n".join(lines)
+
         mood_code = self.profile.mood_index_code
         # 根据 mood_index_code 查找对应指数
         # cn: mood_code="000001"，idx.code 可能为 "sh000001"（以 mood_code 结尾）

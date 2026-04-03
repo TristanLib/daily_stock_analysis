@@ -130,6 +130,44 @@ US_BLUEPRINT = MarketStrategyBlueprint(
 )
 
 
+COMMODITY_BLUEPRINT = MarketStrategyBlueprint(
+    region="commodity",
+    title="大宗商品日报策略框架",
+    positioning="聚焦美元与利率驱动、供需基本面与地缘风险，形成各品种短期交易偏向。",
+    principles=[
+        "先看美元指数方向，再看品种供需结构，最后看地缘政治催化。",
+        "黄金与美债实际利率负相关；原油受OPEC产能与需求预期双向影响。",
+        "结论须给出明确的偏多/偏空/中性判断，避免模糊表述。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="美元与利率",
+            objective="判断美元强弱对大宗商品的整体压制或支撑。",
+            checkpoints=["美元指数今日方向", "美债实际利率（TIPS）变化", "美联储预期对贵金属的影响"],
+        ),
+        StrategyDimension(
+            name="供需基本面",
+            objective="评估各品种当前供需平衡点与库存状况。",
+            checkpoints=["OPEC+产能政策与原油库存", "黄金ETF持仓与央行购金", "铜需求与中国制造业PMI关联"],
+        ),
+        StrategyDimension(
+            name="地缘与宏观催化",
+            objective="识别短期可能触发价格异动的事件风险。",
+            checkpoints=["地缘冲突对能源/贵金属避险需求的影响", "美国CPI/非农数据对贵金属的冲击", "中国需求侧政策对工业金属的拉动"],
+        ),
+    ],
+    action_framework=[
+        "偏多：美元走弱 + 实际利率下行 + 供给收缩，贵金属/能源多头占优。",
+        "中性：美元震荡 + 供需无明显缺口，持有观望等待方向确认。",
+        "偏空：美元走强 + 需求预期下修 + 库存累积，商品承压。",
+    ],
+)
+
+
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
-    return US_BLUEPRINT if region == "us" else CN_BLUEPRINT
+    if region == "us":
+        return US_BLUEPRINT
+    if region == "commodity":
+        return COMMODITY_BLUEPRINT
+    return CN_BLUEPRINT
