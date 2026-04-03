@@ -933,6 +933,11 @@ def main() -> int:
             # 每日选股扫描（收盘后 15:30 执行）
             def _screener_task():
                 try:
+                    # 非交易日跳过
+                    from src.core.trading_calendar import get_open_markets_today
+                    if "cn" not in get_open_markets_today():
+                        logger.info("今日 A 股休市，跳过每日选股扫描。")
+                        return
                     from src.services.stock_screener import StockScreener
                     from src.notification_sender.telegram_sender import TelegramSender
                     from src.storage import get_db
