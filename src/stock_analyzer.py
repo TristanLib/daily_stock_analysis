@@ -130,8 +130,16 @@ class TrendAnalysisResult:
     rs_today: float = 0.0           # 今日个股涨跌幅 - 大盘涨跌幅（百分点差）
     rs_5d: float = 0.0              # 近5日累计涨幅 / 大盘累计涨幅（比值，>1 代表跑赢）
     rs_20d: float = 0.0             # 近20日累计涨幅 / 大盘累计涨幅（比值）
-    rs_signal: str = ""             # 强势 / 弱势 / 中性
+    rs_signal: str = ""             # 强势 / 中性偏强 / 中性 / 中性偏弱 / 弱势
     rs_trend: str = ""              # 强弱趋势描述
+    rs_ma_trend: str = ""           # RS线均线方向：up / down / flat（股价/指数比值的MA趋势）
+    rs_ma5: float = 0.0             # RS比值线的MA5
+    rs_ma10: float = 0.0            # RS比值线的MA10
+
+    # 大盘环境（由 pipeline 注入，影响个股评分）
+    market_trend_status: Optional[str] = None   # 大盘趋势状态（TrendStatus.value）
+    market_signal_score: int = 0                # 大盘技术评分
+    market_condition_note: str = ""             # 大盘环境对评分的影响说明
 
     # 买入信号
     buy_signal: BuySignal = BuySignal.WAIT
@@ -177,6 +185,12 @@ class TrendAnalysisResult:
             'rs_20d': self.rs_20d,
             'rs_signal': self.rs_signal,
             'rs_trend': self.rs_trend,
+            'rs_ma_trend': self.rs_ma_trend,
+            'rs_ma5': self.rs_ma5,
+            'rs_ma10': self.rs_ma10,
+            'market_trend_status': self.market_trend_status,
+            'market_signal_score': self.market_signal_score,
+            'market_condition_note': self.market_condition_note,
         }
 
 
@@ -214,7 +228,13 @@ class StockTrendAnalyzer:
         """初始化分析器"""
         pass
     
-    def analyze(self, df: pd.DataFrame, code: str, df_index: Optional[pd.DataFrame] = None) -> TrendAnalysisResult:
+    def analyze(
+        self,
+        df: pd.DataFrame,
+        code: str,
+        df_index: Optional[pd.DataFrame] = None,
+        index_trend: Optional['TrendAnalysisResult'] = None,
+    ) -> 'TrendAnalysisResult':
         """
         分析股票趋势
 
@@ -222,6 +242,7 @@ class StockTrendAnalyzer:
             df: 包含 OHLCV 数据的 DataFrame
             code: 股票代码
             df_index: 大盘指数 DataFrame（可选），用于计算个股相对强弱
+            index_trend: 大盘自身的趋势分析结果（可选），用于大盘环境调权
 
         Returns:
             TrendAnalysisResult 分析结果
@@ -275,6 +296,10 @@ class StockTrendAnalyzer:
         # 8. 个股相对强弱（需要大盘数据）
         if df_index is not None and not df_index.empty:
             self._analyze_relative_strength(df, df_index, result)
+
+        # 9. 大盘环境调权（需要大盘趋势分析结果）
+        if index_trend is not None:
+            self._apply_market_condition(result, index_trend)
 
         return result
     
@@ -767,9 +792,14 @@ class StockTrendAnalyzer:
         计算个股相对大盘的强弱。
 
         指标定义：
-        - rs_today: 今日个股涨跌幅 - 大盘涨跌幅（百分点差，正值=跑赢大盘）
-        - rs_5d:    近5日累计涨幅 / 大盘累计涨幅（比值，>1=跑赢，<1=跑输）
-        - rs_20d:   近20日同上
+        - rs_today:   今日个股涨跌幅 - 大盘涨跌幅（百分点差，正值=跑赢大盘）
+        - rs_5d:      近5日累计涨幅 / 大盘累计涨幅（比值，>1=跑赢，<1=跑输）
+        - rs_20d:     近20日同上
+        - rs_ma_trend: RS线（股价/指数收盘比值）的 MA5 与 MA10 方向
+                       up   = MA5 > MA10 且斜率向上（持续跑赢）
+                       down = MA5 < MA10 且斜率向下（持续跑输）
+                       flat = 横盘震荡
+        - rs_signal:  综合 RS 均线趋势与截面比较给出 强势/中性偏强/中性/中性偏弱/弱势
         """
         try:
             df_index = df_index.sort_values('date').reset_index(drop=True)
@@ -793,7 +823,6 @@ class StockTrendAnalyzer:
             if len(common_dates) >= 5:
                 s_ret_5d = s['close'].iloc[-1] / s['close'].iloc[-5] - 1
                 i_ret_5d = idx['close'].iloc[-1] / idx['close'].iloc[-5] - 1
-                # 避免除零：大盘5日涨幅为0时用差值
                 if abs(i_ret_5d) > 0.001:
                     result.rs_5d = round(s_ret_5d / abs(i_ret_5d) * (1 if i_ret_5d > 0 else -1), 2)
                 else:
@@ -808,21 +837,64 @@ class StockTrendAnalyzer:
                 else:
                     result.rs_20d = round((s_ret_20d - i_ret_20d) * 100, 2)
 
-            # 综合判断
+            # RS均线趋势：以 stock/index 收盘比值构建时间序列，计算 MA5 与 MA10
+            # MA5 > MA10 且斜率向上 → 个股持续跑赢大盘（真正的强势）
+            idx_close = idx['close'].values.astype(float)
+            s_close = s['close'].values.astype(float)
+            # 避免除零
+            safe_idx = np.where(idx_close > 0, idx_close, np.nan)
+            ratio_arr = s_close / safe_idx  # RS比值序列
+
+            n = len(ratio_arr)
+            if n >= 10:
+                rs_ma5_now = float(np.nanmean(ratio_arr[-5:]))
+                rs_ma10_now = float(np.nanmean(ratio_arr[-10:]))
+                rs_ma5_prev = float(np.nanmean(ratio_arr[-10:-5]))  # 5日前的MA5
+                result.rs_ma5 = round(rs_ma5_now, 6)
+                result.rs_ma10 = round(rs_ma10_now, 6)
+                ma5_rising = rs_ma5_now > rs_ma5_prev  # MA5斜率向上
+                if rs_ma5_now > rs_ma10_now and ma5_rising:
+                    result.rs_ma_trend = "up"
+                elif rs_ma5_now < rs_ma10_now and not ma5_rising:
+                    result.rs_ma_trend = "down"
+                else:
+                    result.rs_ma_trend = "flat"
+            elif n >= 5:
+                result.rs_ma5 = round(float(np.nanmean(ratio_arr[-5:])), 6)
+                result.rs_ma_trend = "flat"  # 数据不足10日，无法判断MA趋势
+
+            # 综合判断：RS均线趋势为主，截面点位为辅
             strong_count = sum([
                 result.rs_today > 0,
                 result.rs_5d > 1.0,
                 result.rs_20d > 1.0,
             ])
-            if strong_count >= 2:
+            if result.rs_ma_trend == "up":
                 result.rs_signal = "强势"
-            elif strong_count == 0:
+            elif result.rs_ma_trend == "down":
                 result.rs_signal = "弱势"
+            elif result.rs_ma_trend == "flat":
+                # MA横盘时，用截面点位作为细分
+                if strong_count >= 2:
+                    result.rs_signal = "中性偏强"
+                elif strong_count == 0:
+                    result.rs_signal = "中性偏弱"
+                else:
+                    result.rs_signal = "中性"
             else:
-                result.rs_signal = "中性"
+                # 数据不足，退回原逻辑
+                if strong_count >= 2:
+                    result.rs_signal = "强势"
+                elif strong_count == 0:
+                    result.rs_signal = "弱势"
+                else:
+                    result.rs_signal = "中性"
 
             # 趋势描述
             parts = []
+            if result.rs_ma_trend in ("up", "down", "flat"):
+                trend_label = {"up": "RS线上行", "down": "RS线下行", "flat": "RS线横盘"}
+                parts.append(trend_label[result.rs_ma_trend])
             if result.rs_today > 0:
                 parts.append(f"今日跑赢大盘{abs(result.rs_today):.2f}个百分点")
             else:
@@ -834,6 +906,67 @@ class StockTrendAnalyzer:
 
         except Exception as e:
             logger.debug(f"{result.code} 个股强弱计算失败: {e}")
+
+    def _apply_market_condition(
+        self, result: TrendAnalysisResult, index_trend: TrendAnalysisResult
+    ) -> None:
+        """
+        根据大盘自身的技术状态对个股信号评分进行调权。
+
+        大盘空头/强空时，个股技术信号可靠性下降，整体评分打折并降级买入信号。
+        大盘多头/强多时保持原分不变（不加分，避免双重计算——大盘已体现在 RS 里）。
+
+        调整系数：
+          强势多头 / 多头     → ×1.0（不变）
+          弱势多头            → ×0.90
+          震荡整理            → ×0.85
+          弱势空头            → ×0.75
+          空头                → ×0.60
+          强势空头            → ×0.50
+        """
+        mult_map = {
+            TrendStatus.STRONG_BULL:  1.0,
+            TrendStatus.BULL:         1.0,
+            TrendStatus.WEAK_BULL:    0.90,
+            TrendStatus.CONSOLIDATION: 0.85,
+            TrendStatus.WEAK_BEAR:    0.75,
+            TrendStatus.BEAR:         0.60,
+            TrendStatus.STRONG_BEAR:  0.50,
+        }
+        market_status = index_trend.trend_status
+        mult = mult_map.get(market_status, 1.0)
+
+        result.market_trend_status = market_status.value
+        result.market_signal_score = index_trend.signal_score
+
+        if mult >= 1.0:
+            return  # 牛市不额外加权，不干扰个股信号
+
+        original = result.signal_score
+        adjusted = int(original * mult)
+        result.signal_score = adjusted
+        result.market_condition_note = (
+            f"大盘{market_status.value}（×{mult:.0%}），"
+            f"个股评分 {original} → {adjusted}"
+        )
+        result.risk_factors.append(
+            f"⚠️ 大盘{market_status.value}，个股信号降权至{adjusted}分"
+        )
+
+        # 用调整后的分数重新判断买入信号
+        s = adjusted
+        if s >= 75 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
+            result.buy_signal = BuySignal.STRONG_BUY
+        elif s >= 60 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL, TrendStatus.WEAK_BULL]:
+            result.buy_signal = BuySignal.BUY
+        elif s >= 45:
+            result.buy_signal = BuySignal.HOLD
+        elif s >= 30:
+            result.buy_signal = BuySignal.WAIT
+        elif result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
+            result.buy_signal = BuySignal.STRONG_SELL
+        else:
+            result.buy_signal = BuySignal.SELL
 
     def format_analysis(self, result: TrendAnalysisResult) -> str:
         """

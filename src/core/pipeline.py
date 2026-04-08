@@ -311,12 +311,32 @@ class StockAnalysisPipeline:
                     if self.config.enable_realtime_quote and realtime_quote:
                         df = self._augment_historical_with_realtime(df, realtime_quote, code)
 
-                    # 获取大盘指数数据用于个股强弱计算
+                    # 获取大盘指数数据：用于个股强弱计算 + 大盘环境调权
                     df_index = self._fetch_market_index_df(code, start_date, end_date)
-                    trend_result = self.trend_analyzer.analyze(df, code, df_index=df_index)
+                    index_trend = None
+                    if df_index is not None and not df_index.empty:
+                        try:
+                            from data_provider.base import normalize_stock_code as _norm
+                            from src.core.trading_calendar import get_market_for_stock
+                            _mkt = get_market_for_stock(_norm(code)) or 'cn'
+                            _idx_code = self._INDEX_CODE_MAP.get(_mkt, '000001')
+                            index_trend = self.trend_analyzer.analyze(df_index, _idx_code)
+                            logger.debug(
+                                f"大盘技术状态: {index_trend.trend_status.value}, "
+                                f"评分={index_trend.signal_score}"
+                            )
+                        except Exception as _e:
+                            logger.debug(f"大盘趋势分析失败（不影响主流程）: {_e}")
+                    trend_result = self.trend_analyzer.analyze(
+                        df, code, df_index=df_index, index_trend=index_trend
+                    )
                     rs_info = f", 个股强弱={trend_result.rs_signal}({trend_result.rs_today:+.2f}pct)" if trend_result.rs_signal else ""
-                    logger.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
-                              f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}{rs_info}")
+                    mkt_info = f", 大盘={trend_result.market_trend_status}" if trend_result.market_trend_status else ""
+                    logger.info(
+                        f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
+                        f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}"
+                        f"{rs_info}{mkt_info}"
+                    )
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
 

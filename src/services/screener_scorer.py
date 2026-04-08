@@ -63,6 +63,10 @@ class ScreenerScorer:
         rs = getattr(trend_result, 'rs_signal', '') or ''
         if rs == '强势':
             rs_score = 100.0
+        elif rs == '中性偏强':
+            rs_score = 65.0
+        elif rs == '中性偏弱':
+            rs_score = 35.0
         elif rs == '弱势':
             rs_score = 0.0
         else:
