@@ -316,9 +316,7 @@ class StockAnalysisPipeline:
                     index_trend = None
                     if df_index is not None and not df_index.empty:
                         try:
-                            from data_provider.base import normalize_stock_code as _norm
-                            from src.core.trading_calendar import get_market_for_stock
-                            _mkt = get_market_for_stock(_norm(code)) or 'cn'
+                            _mkt = get_market_for_stock(normalize_stock_code(code)) or 'cn'
                             _idx_code = self._INDEX_CODE_MAP.get(_mkt, '000001')
                             index_trend = self.trend_analyzer.analyze(df_index, _idx_code)
                             logger.debug(
