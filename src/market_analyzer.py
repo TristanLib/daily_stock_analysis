@@ -574,7 +574,10 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
                 sector_block = "## Sector Performance\n(US sector data not available.)"
         else:
             if self.profile.has_market_stats:
-                stats_block = f"""## 市场概况
+                if self._is_no_data_day(overview):
+                    stats_block = "## 市场概况\n⚠️ 涨跌家数与成交额数据均为零，疑似非交易日或数据获取失败，请勿基于此数据作出市场判断。"
+                else:
+                    stats_block = f"""## 市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元"""
@@ -814,26 +817,50 @@ Output the report content directly, no extra commentary.
 """
         return report
     
-    def run_daily_review(self) -> str:
+    def _is_no_data_day(self, overview: MarketOverview) -> bool:
+        """检测是否为无交易数据日（非交易日或数据获取全部失败）。
+
+        仅对有市场广度统计的市场（A 股）有效。
+        判断依据：涨跌平家数总和为 0 且两市成交额为 0。
+        这在正常交易日几乎不可能发生，可靠地区分非交易日与真实行情。
+        """
+        if not self.profile.has_market_stats:
+            return False
+        return (
+            overview.up_count == 0
+            and overview.down_count == 0
+            and overview.flat_count == 0
+            and overview.total_amount == 0.0
+        )
+
+    def run_daily_review(self) -> Optional[str]:
         """
         执行每日大盘复盘流程
-        
+
         Returns:
-            复盘报告文本
+            复盘报告文本，若当日无交易数据则返回 None
         """
         logger.info("========== 开始大盘复盘分析 ==========")
-        
+
         # 1. 获取市场概览
         overview = self.get_market_overview()
-        
-        # 2. 搜索市场新闻
+
+        # 2. 无交易数据卫兵：涨跌家数与成交额全为零，视为非交易日或数据源全部失败
+        if self._is_no_data_day(overview):
+            logger.warning(
+                "[大盘] 涨跌家数与成交额均为 0，疑似非交易日或数据源全部失败，"
+                "跳过复盘报告生成。如需强制生成请使用 --force-run。"
+            )
+            return None
+
+        # 3. 搜索市场新闻
         news = self.search_market_news()
-        
-        # 3. 生成复盘报告
+
+        # 4. 生成复盘报告
         report = self.generate_market_review(overview, news)
-        
+
         logger.info("========== 大盘复盘分析完成 ==========")
-        
+
         return report
 
 
