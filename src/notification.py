@@ -1531,6 +1531,21 @@ class NotificationService(
                 f"{snapshot.get('turnover_rate', 'N/A')} | {display_source} |",
             ])
 
+        # 个股相对强弱（RS）—— 由 pipeline 从 TrendAnalyzer 回写，非 LLM 生成
+        rs_signal = getattr(result, 'rs_signal', '')
+        if rs_signal:
+            rs_today = getattr(result, 'rs_today', 0.0)
+            rs_5d = getattr(result, 'rs_5d', 0.0)
+            rs_20d = getattr(result, 'rs_20d', 0.0)
+            rs_ma_trend = getattr(result, 'rs_ma_trend', '')
+            rs_emoji = "🟢" if "强" in rs_signal else "🔴" if "弱" in rs_signal else "⚪"
+            ma_arrow = " ↑" if rs_ma_trend == "up" else " ↓" if rs_ma_trend == "down" else ""
+            lines.extend([
+                "",
+                f"**📊 个股强弱（vs 大盘）**: {rs_emoji} **{rs_signal}**{ma_arrow} | "
+                f"今日 {rs_today:+.2f}pct | 5日 {rs_5d:.2f}x | 20日 {rs_20d:.2f}x",
+            ])
+
         lines.append("")
 
     def _should_use_image_for_channel(

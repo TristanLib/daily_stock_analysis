@@ -377,6 +377,14 @@ class AnalysisResult:
     success: bool = True
     error_message: Optional[str] = None
 
+    # ========== 个股相对强弱（vs 大盘，由 TrendAnalyzer 计算，pipeline 回写）==========
+    rs_signal: str = ""       # 强势 / 中性偏强 / 中性 / 中性偏弱 / 弱势
+    rs_today: float = 0.0    # 今日个股涨跌幅 - 大盘涨跌幅（百分点差）
+    rs_5d: float = 0.0       # 近5日累计涨幅 / 大盘累计涨幅（比值）
+    rs_20d: float = 0.0      # 近20日累计涨幅 / 大盘累计涨幅（比值）
+    rs_trend: str = ""        # 强弱趋势描述
+    rs_ma_trend: str = ""     # RS线均线方向：up / down / flat
+
     # ========== 价格数据（分析时快照）==========
     current_price: Optional[float] = None  # 分析时的股价
     change_pct: Optional[float] = None     # 分析时的涨跌幅(%)

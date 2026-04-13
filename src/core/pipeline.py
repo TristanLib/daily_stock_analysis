@@ -448,6 +448,15 @@ class StockAnalysisPipeline:
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
 
+            # Step 7.8: 回写个股相对强弱（RS）到 AnalysisResult，供通知模板直接使用
+            if result and trend_result:
+                result.rs_signal = trend_result.rs_signal
+                result.rs_today = trend_result.rs_today
+                result.rs_5d = trend_result.rs_5d
+                result.rs_20d = trend_result.rs_20d
+                result.rs_trend = trend_result.rs_trend
+                result.rs_ma_trend = getattr(trend_result, 'rs_ma_trend', '')
+
             # Step 8: 保存分析历史记录
             if result:
                 try:

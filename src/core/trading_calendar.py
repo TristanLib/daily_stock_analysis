@@ -69,6 +69,8 @@ def is_market_open(market: str, check_date: date) -> bool:
     Check if the given market is open on the given date.
 
     Fail-open: returns True if exchange-calendars unavailable or date out of range.
+    Hard-close: weekends (Saturday/Sunday) are never trading days for any market
+    supported here, regardless of library data quality.
 
     Args:
         market: 'cn' | 'hk' | 'us'
@@ -77,6 +79,13 @@ def is_market_open(market: str, check_date: date) -> bool:
     Returns:
         True if trading day (or fail-open), False otherwise
     """
+    # Weekends are universally non-trading for all supported markets.
+    # This guard catches stale/missing calendar data that might otherwise
+    # misclassify a weekend as a session (e.g. exchange-calendars with
+    # incomplete future-year data).
+    if check_date.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+
     if not _XCALS_AVAILABLE:
         return True
     ex = MARKET_EXCHANGE.get(market)
