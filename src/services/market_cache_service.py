@@ -149,8 +149,6 @@ class MarketCacheService:
         # 3. 并发抓取
         from data_provider.pytdx_fetcher import PytdxFetcher
 
-        fetcher = PytdxFetcher()
-
         # 按日期分组的记录汇总
         date_records: dict = defaultdict(list)
         errors = 0
@@ -159,7 +157,13 @@ class MarketCacheService:
         def _fetch_one(item):
             code, name = item
             try:
-                df = fetcher._fetch_raw_data(code, start_str, end_str)
+                # Create a new PytdxFetcher instance per thread to avoid data race
+                # on mutable _current_host_idx attribute
+                local_fetcher = PytdxFetcher()
+                # Using private _fetch_raw_data() directly to access raw Pytdx column names
+                # (datetime, open, high, low, close, vol, amount) before normalization.
+                # If PytdxFetcher internals change, update the column mapping below.
+                df = local_fetcher._fetch_raw_data(code, start_str, end_str)
                 if df is None or df.empty:
                     return []
                 rows = []
