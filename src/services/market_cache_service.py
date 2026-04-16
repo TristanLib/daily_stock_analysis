@@ -164,9 +164,11 @@ class MarketCacheService:
         def _fetch_one(item):
             code, name = item
             try:
-                df = ak.stock_zh_a_hist(
-                    symbol=code,
-                    period="daily",
+                # stock_zh_a_daily uses Sina Finance (accessible from overseas).
+                # Symbol must be prefixed: sh600519 / sz000001.
+                prefix = "sh" if code.startswith("6") else "sz"
+                df = ak.stock_zh_a_daily(
+                    symbol=prefix + code,
                     start_date=start_str,
                     end_date=end_str,
                     adjust="qfq",
@@ -176,7 +178,7 @@ class MarketCacheService:
                 rows = []
                 for _, row in df.iterrows():
                     try:
-                        trade_dt = row.get("日期") or row.get("date")
+                        trade_dt = row.get("date")
                         if trade_dt is None:
                             continue
                         if hasattr(trade_dt, "date"):
@@ -188,14 +190,14 @@ class MarketCacheService:
                             {
                                 "stock_code": code,
                                 "stock_name": name,
-                                "open":         _safe_float(row.get("开盘") or row.get("open")),
-                                "high":         _safe_float(row.get("最高") or row.get("high")),
-                                "low":          _safe_float(row.get("最低") or row.get("low")),
-                                "close":        _safe_float(row.get("收盘") or row.get("close")),
-                                "volume":       _safe_float(row.get("成交量") or row.get("volume")),
-                                "amount":       _safe_float(row.get("成交额") or row.get("amount")),
-                                "change_pct":   _safe_float(row.get("涨跌幅")),
-                                "turnover_rate": _safe_float(row.get("换手率")),
+                                "open":         _safe_float(row.get("open")),
+                                "high":         _safe_float(row.get("high")),
+                                "low":          _safe_float(row.get("low")),
+                                "close":        _safe_float(row.get("close")),
+                                "volume":       _safe_float(row.get("volume")),
+                                "amount":       _safe_float(row.get("amount")),
+                                "change_pct":   None,
+                                "turnover_rate": _safe_float(row.get("turnover")),
                                 "volume_ratio": None,
                             },
                         ))
