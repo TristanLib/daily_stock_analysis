@@ -84,6 +84,37 @@ class StockScreener:
             yield items[i:i + batch_size]
 
     # ------------------------------------------------------------------
+    # Market index helper
+    # ------------------------------------------------------------------
+
+    def _fetch_market_index(self):
+        """
+        拉取上证综指日线数据，用于全市场扫描的个股强弱（RS）计算。
+        使用新浪数据源，境外服务器可访问。
+
+        Returns:
+            pd.DataFrame with columns [date, close], or None on failure.
+        """
+        try:
+            import akshare as ak
+            import pandas as pd
+            from datetime import date, timedelta
+
+            df = ak.stock_zh_index_daily(symbol="sh000001")
+            if df is None or df.empty:
+                return None
+
+            # 只保留 date + close，截取近 60 个日历日（约 40 交易日）
+            cutoff = str(date.today() - timedelta(days=60))
+            df = df[df['date'] >= cutoff][['date', 'close']].copy()
+            df = df.reset_index(drop=True)
+            logger.info("上证指数数据获取成功，共 %d 条，RS 计算已启用", len(df))
+            return df
+        except Exception as e:
+            logger.warning("上证指数数据获取失败，RS 评分将使用中性值: %s", e)
+            return None
+
+    # ------------------------------------------------------------------
     # Main scan
     # ------------------------------------------------------------------
 
@@ -112,12 +143,16 @@ class StockScreener:
         logger.info("股票池共 %d 只，分 %d 批处理", len(universe),
                     (len(universe) + BATCH_SIZE - 1) // BATCH_SIZE)
 
+        # 一次性拉取大盘指数数据，供所有股票 RS 计算共用
+        df_index = self._fetch_market_index()
+
         all_results: List = []
         scanned = 0
 
         for batch_num, batch in enumerate(self._make_batches(universe), start=1):
             batch_results = self._scan_batch(
-                batch, trend_analyzer, ScreenerScorer, scan_date, cache_only=True
+                batch, trend_analyzer, ScreenerScorer, scan_date,
+                cache_only=True, df_index=df_index,
             )
             all_results.extend(batch_results)
             scanned += len(batch)
@@ -143,14 +178,15 @@ class StockScreener:
         return all_results
 
     def _scan_batch(self, batch, trend_analyzer, ScreenerScorer, scan_date,
-                    cache_only: bool = False) -> List:
+                    cache_only: bool = False, df_index=None) -> List:
         """Score a single batch of stocks with per-stock retry and rate limiting."""
         results = []
         for code, name in batch:
             for attempt in range(MAX_RETRIES + 1):
                 try:
                     result = self._score_stock(
-                        code, name, trend_analyzer, ScreenerScorer, cache_only=cache_only
+                        code, name, trend_analyzer, ScreenerScorer,
+                        cache_only=cache_only, df_index=df_index,
                     )
                     if result is not None:
                         results.append(result)
@@ -167,13 +203,15 @@ class StockScreener:
         return results
 
     def _score_stock(self, code, name, trend_analyzer, ScreenerScorer,
-                     cache_only: bool = False):
+                     cache_only: bool = False, df_index=None):
         """Fetch data from cache (preferred) or live, then score.
 
         Args:
             cache_only: When True, skip live fetch fallback and return None
                         if cache is insufficient. Use for full-market scans
                         to avoid per-stock live requests to blocked endpoints.
+            df_index:   大盘指数 DataFrame（date + close），用于 RS 计算。
+                        None 时 RS 降级为中性值。
         """
         # 1. Try cache first
         df = self._db.get_market_cache_for_stock(code, days=30)
@@ -192,8 +230,8 @@ class StockScreener:
         if 'trade_date' in df.columns and 'date' not in df.columns:
             df = df.rename(columns={'trade_date': 'date'})
 
-        # 4. Technical analysis
-        trend_result = trend_analyzer.analyze(df, code)
+        # 4. Technical analysis (pass df_index for RS calculation when available)
+        trend_result = trend_analyzer.analyze(df, code, df_index=df_index)
 
         # 5. Financial data from DB cache or FundamentalAdapter
         financial_report = {}
