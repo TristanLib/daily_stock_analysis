@@ -116,7 +116,9 @@ class StockScreener:
         scanned = 0
 
         for batch_num, batch in enumerate(self._make_batches(universe), start=1):
-            batch_results = self._scan_batch(batch, trend_analyzer, ScreenerScorer, scan_date)
+            batch_results = self._scan_batch(
+                batch, trend_analyzer, ScreenerScorer, scan_date, cache_only=True
+            )
             all_results.extend(batch_results)
             scanned += len(batch)
             logger.info("批次 %d 完成，已扫描 %d/%d", batch_num, scanned, len(universe))
@@ -140,13 +142,16 @@ class StockScreener:
         logger.info("扫描完成 %d/%d 只，耗时 %s", scanned, len(universe), elapsed_str)
         return all_results
 
-    def _scan_batch(self, batch, trend_analyzer, ScreenerScorer, scan_date) -> List:
+    def _scan_batch(self, batch, trend_analyzer, ScreenerScorer, scan_date,
+                    cache_only: bool = False) -> List:
         """Score a single batch of stocks with per-stock retry and rate limiting."""
         results = []
         for code, name in batch:
             for attempt in range(MAX_RETRIES + 1):
                 try:
-                    result = self._score_stock(code, name, trend_analyzer, ScreenerScorer)
+                    result = self._score_stock(
+                        code, name, trend_analyzer, ScreenerScorer, cache_only=cache_only
+                    )
                     if result is not None:
                         results.append(result)
                     break
@@ -161,13 +166,22 @@ class StockScreener:
 
         return results
 
-    def _score_stock(self, code, name, trend_analyzer, ScreenerScorer):
-        """Fetch data from cache (preferred) or live, then score."""
+    def _score_stock(self, code, name, trend_analyzer, ScreenerScorer,
+                     cache_only: bool = False):
+        """Fetch data from cache (preferred) or live, then score.
+
+        Args:
+            cache_only: When True, skip live fetch fallback and return None
+                        if cache is insufficient. Use for full-market scans
+                        to avoid per-stock live requests to blocked endpoints.
+        """
         # 1. Try cache first
         df = self._db.get_market_cache_for_stock(code, days=30)
 
         if df is None or df.empty or len(df) < 5:
-            # 2. Fallback to live fetch
+            if cache_only:
+                return None
+            # 2. Fallback to live fetch (for personal stock pool only)
             if self._fetcher is not None:
                 df, _ = self._fetcher.get_daily_data(code, days=30)
             if df is None or df.empty or len(df) < 5:
