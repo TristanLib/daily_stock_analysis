@@ -855,9 +855,10 @@ def main() -> int:
                 getattr(config, 'telegram_bot_token', None) and
                 getattr(config, 'telegram_chat_id', None)
             ) else None
+            from data_provider.base import DataFetcherManager
             screener = StockScreener(
                 config=config,
-                fetcher_manager=fetcher_manager,
+                fetcher_manager=DataFetcherManager(),
                 db=_db,
                 telegram_sender=_tg,
             )
@@ -1016,13 +1017,14 @@ def main() -> int:
                     from src.services.stock_screener import StockScreener
                     from src.notification_sender.telegram_sender import TelegramSender
                     from src.storage import get_db
+                    from data_provider.base import DataFetcherManager as _DFM
                     _runtime = _reload_runtime_config()
                     _tg = TelegramSender(_runtime) if (
                         _runtime.telegram_bot_token and _runtime.telegram_chat_id
                     ) else None
                     screener = StockScreener(
                         config=_runtime,
-                        fetcher_manager=fetcher_manager,
+                        fetcher_manager=_DFM(),
                         db=get_db(),
                         telegram_sender=_tg,
                     )
