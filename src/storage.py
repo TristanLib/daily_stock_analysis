@@ -665,6 +665,12 @@ class MarketDailyCache(Base):
     )
 
 
+_CACHE_COLUMNS = [
+    'trade_date', 'open', 'high', 'low', 'close',
+    'volume', 'amount', 'change_pct', 'turnover_rate', 'volume_ratio',
+]
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -2036,52 +2042,41 @@ class DatabaseManager:
 
     def upsert_market_daily_cache(self, records: list, trade_date) -> int:
         """
-        Upsert daily OHLCV records for all stocks.
+        Bulk-upsert daily OHLCV records for all stocks on a given trade_date.
+        Uses DELETE + bulk_insert_mappings for efficiency (no N+1 queries).
         records: list of dicts with keys: stock_code, stock_name, open, high, low,
                  close, volume, amount, change_pct, turnover_rate, volume_ratio
         trade_date: date object
-        Returns number of records upserted.
+        Returns number of records inserted.
         """
-        count = 0
+        if not records:
+            return 0
         with self.session_scope() as session:
-            for rec in records:
-                stock_code = rec.get('stock_code')
-                if not stock_code:
-                    continue
-                existing = (
-                    session.query(MarketDailyCache)
-                    .filter_by(trade_date=trade_date, stock_code=stock_code)
-                    .first()
-                )
-                if existing:
-                    existing.stock_name = rec.get('stock_name')
-                    existing.open = rec.get('open')
-                    existing.high = rec.get('high')
-                    existing.low = rec.get('low')
-                    existing.close = rec.get('close')
-                    existing.volume = rec.get('volume')
-                    existing.amount = rec.get('amount')
-                    existing.change_pct = rec.get('change_pct')
-                    existing.turnover_rate = rec.get('turnover_rate')
-                    existing.volume_ratio = rec.get('volume_ratio')
-                else:
-                    row = MarketDailyCache(
-                        trade_date=trade_date,
-                        stock_code=stock_code,
-                        stock_name=rec.get('stock_name'),
-                        open=rec.get('open'),
-                        high=rec.get('high'),
-                        low=rec.get('low'),
-                        close=rec.get('close'),
-                        volume=rec.get('volume'),
-                        amount=rec.get('amount'),
-                        change_pct=rec.get('change_pct'),
-                        turnover_rate=rec.get('turnover_rate'),
-                        volume_ratio=rec.get('volume_ratio'),
-                    )
-                    session.add(row)
-                count += 1
-        return count
+            # Delete existing rows for this date in one shot
+            session.execute(
+                delete(MarketDailyCache).where(MarketDailyCache.trade_date == trade_date)
+            )
+            # Bulk insert all records
+            mappings = [
+                {
+                    "trade_date": trade_date,
+                    "stock_code": r["stock_code"],
+                    "stock_name": r.get("stock_name", ""),
+                    "open": r.get("open"),
+                    "high": r.get("high"),
+                    "low": r.get("low"),
+                    "close": r.get("close"),
+                    "volume": r.get("volume"),
+                    "amount": r.get("amount"),
+                    "change_pct": r.get("change_pct"),
+                    "turnover_rate": r.get("turnover_rate"),
+                    "volume_ratio": r.get("volume_ratio"),
+                }
+                for r in records
+                if r.get("stock_code")
+            ]
+            session.bulk_insert_mappings(MarketDailyCache, mappings)
+            return len(mappings)
 
     def get_market_cache_for_stock(self, stock_code: str, days: int = 30) -> pd.DataFrame:
         """
@@ -2099,7 +2094,7 @@ class DatabaseManager:
                 .all()
             )
             if not rows:
-                return pd.DataFrame()
+                return pd.DataFrame(columns=_CACHE_COLUMNS)
             rows = list(reversed(rows))
             data = [
                 {
