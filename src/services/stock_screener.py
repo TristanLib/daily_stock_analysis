@@ -105,8 +105,9 @@ class StockScreener:
                 return None
 
             # 只保留 date + close，截取近 60 个日历日（约 40 交易日）
+            # 统一转为字符串再比较，避免 datetime.date vs str 类型错误
             cutoff = str(date.today() - timedelta(days=60))
-            df = df[df['date'] >= cutoff][['date', 'close']].copy()
+            df = df[df['date'].astype(str) >= cutoff][['date', 'close']].copy()
             df = df.reset_index(drop=True)
             logger.info("上证指数数据获取成功，共 %d 条，RS 计算已启用", len(df))
             return df
