@@ -264,7 +264,7 @@ class MarketCacheService:
             logger.warning(f"获取上证 A 股清单失败: {exc}")
 
         try:
-            sz_df = ak.stock_info_sz_name_code(indicator="A股列表")
+            sz_df = ak.stock_info_sz_name_code(symbol="A股列表")
             _add(sz_df, "A股代码", "A股简称")
         except Exception as exc:
             logger.warning(f"获取深证 A 股清单失败: {exc}")
