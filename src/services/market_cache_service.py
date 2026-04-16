@@ -62,7 +62,9 @@ class MarketCacheService:
 
     def update_today(self, trade_date: date = None) -> int:
         """
-        用 akshare spot_em() 拉取当日全市场 OHLCV 并写入缓存。
+        拉取当日全市场 OHLCV 并写入缓存。
+        首选 spot_em()（东方财富，含换手率/量比）；若连续失败则降级至
+        stock_zh_a_spot()（新浪，境外服务器可访问，不含换手率/量比）。
 
         Args:
             trade_date: 交易日期，默认为今天
@@ -71,14 +73,17 @@ class MarketCacheService:
             写入记录数
 
         Raises:
-            Exception: spot_em() 连续失败 2 次后抛出
+            Exception: 两种数据源均失败后抛出
         """
         if trade_date is None:
             trade_date = date.today()
 
         import akshare as ak
 
-        # 最多重试 2 次
+        df = None
+        use_sina = False
+
+        # 尝试东方财富（最多 2 次）
         last_exc = None
         for attempt in range(2):
             try:
@@ -87,13 +92,23 @@ class MarketCacheService:
             except Exception as exc:
                 last_exc = exc
                 logger.warning(f"spot_em() 第 {attempt + 1} 次调用失败: {exc}")
-        else:
-            logger.error(f"spot_em() 连续失败，放弃: {last_exc}")
-            raise last_exc
+
+        # 降级到新浪
+        if df is None:
+            logger.warning("spot_em() 连续失败，降级到新浪 stock_zh_a_spot()")
+            try:
+                df = ak.stock_zh_a_spot()
+                use_sina = True
+                logger.info("stock_zh_a_spot() 获取成功，共 %d 条", len(df))
+            except Exception as exc:
+                logger.error(f"stock_zh_a_spot() 也失败: {exc}")
+                raise exc
 
         records = []
         for _, row in df.iterrows():
-            code = str(row.get("代码", ""))
+            raw_code = str(row.get("代码", ""))
+            # 新浪返回带市场前缀的代码（如 sh600519），剥离前两位
+            code = raw_code[2:] if (use_sina and len(raw_code) > 6) else raw_code
             name = str(row.get("名称", ""))
             if _is_filtered(code, name):
                 continue
@@ -108,8 +123,8 @@ class MarketCacheService:
                     "volume": _safe_float(row.get("成交量")),
                     "amount": _safe_float(row.get("成交额")),
                     "change_pct": _safe_float(row.get("涨跌幅")),
-                    "turnover_rate": _safe_float(row.get("换手率")),
-                    "volume_ratio": _safe_float(row.get("量比")),
+                    "turnover_rate": _safe_float(row.get("换手率")),  # 新浪无此字段，返回 None
+                    "volume_ratio": _safe_float(row.get("量比")),    # 新浪无此字段，返回 None
                 }
             )
 
