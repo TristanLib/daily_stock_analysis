@@ -86,19 +86,23 @@ class MarketCacheService:
         _SPOT_EM_TIMEOUT = 45  # spot_em() 内部分页较多，给 45s 总超时
 
         # 尝试东方财富（最多 2 次，每次最多 45s）
+        # 注意：不使用 with 语句，避免 shutdown(wait=True) 在超时后仍阻塞
         last_exc = None
         for attempt in range(2):
+            _ex = ThreadPoolExecutor(max_workers=1)
             try:
-                with ThreadPoolExecutor(max_workers=1) as _ex:
-                    _fut = _ex.submit(ak.stock_zh_a_spot_em)
-                    try:
-                        df = _fut.result(timeout=_SPOT_EM_TIMEOUT)
-                        break
-                    except FuturesTimeout:
-                        logger.warning(
-                            f"spot_em() 第 {attempt + 1} 次超时（>{_SPOT_EM_TIMEOUT}s），跳过"
-                        )
+                _fut = _ex.submit(ak.stock_zh_a_spot_em)
+                try:
+                    df = _fut.result(timeout=_SPOT_EM_TIMEOUT)
+                    _ex.shutdown(wait=False)
+                    break
+                except FuturesTimeout:
+                    _ex.shutdown(wait=False)  # 不等待后台线程，立即继续
+                    logger.warning(
+                        f"spot_em() 第 {attempt + 1} 次超时（>{_SPOT_EM_TIMEOUT}s），跳过"
+                    )
             except Exception as exc:
+                _ex.shutdown(wait=False)
                 last_exc = exc
                 logger.warning(f"spot_em() 第 {attempt + 1} 次调用失败: {exc}")
 
