@@ -216,6 +216,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --market-scan          # 全市场扫描（Bootstrap + 当日更新 + 评分推送）
         '''
     )
 
@@ -355,6 +356,12 @@ def parse_arguments() -> argparse.Namespace:
         '--backtest-force',
         action='store_true',
         help='强制回测（即使已有回测结果也重新计算）'
+    )
+
+    parser.add_argument(
+        '--market-scan',
+        action='store_true',
+        help='运行全市场 A 股扫描：Bootstrap 历史缓存（首次）+ 拉取当日数据 + 评分推送 Top 10'
     )
 
     return parser.parse_args()
@@ -819,6 +826,46 @@ def main() -> int:
             )
             return 0
 
+        # 模式0: 全市场扫描（一次性手动触发）
+        if getattr(args, 'market_scan', False):
+            from src.services.market_cache_service import MarketCacheService
+            from src.services.stock_screener import StockScreener
+            from src.notification_sender.telegram_sender import TelegramSender
+            from src.storage import get_db
+
+            _db = get_db()
+            cache_svc = MarketCacheService(db=_db)
+
+            # Step 1: Bootstrap if needed
+            if not cache_svc.is_bootstrapped():
+                logger.info("[market-scan] 缓存不足，开始 Bootstrap 历史数据（约 5-15 分钟）...")
+                result = cache_svc.bootstrap(days=30)
+                logger.info("[market-scan] Bootstrap 完成: %s", result)
+            else:
+                logger.info("[market-scan] 缓存已就绪，跳过 Bootstrap")
+
+            # Step 2: Update today's data
+            logger.info("[market-scan] Phase 1: 拉取当日全市场数据...")
+            count = cache_svc.update_today()
+            logger.info("[market-scan] Phase 1 完成，缓存 %d 只股票", count)
+
+            # Step 3: Run screener
+            logger.info("[market-scan] Phase 2: 全市场评分扫描...")
+            _tg = TelegramSender(config) if (
+                getattr(config, 'telegram_bot_token', None) and
+                getattr(config, 'telegram_chat_id', None)
+            ) else None
+            from data_provider.base import DataFetcherManager
+            screener = StockScreener(
+                config=config,
+                fetcher_manager=DataFetcherManager(),
+                db=_db,
+                telegram_sender=_tg,
+            )
+            screener.run_daily_scan()
+            logger.info("[market-scan] 全市场扫描完成")
+            return 0
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.analyzer import GeminiAnalyzer
@@ -930,6 +977,35 @@ def main() -> int:
                         "name": "data_cleanup",
                     })
 
+            # Phase 1: 每日市场缓存更新（收盘后 15:05 执行）
+            def _market_cache_task():
+                try:
+                    from src.core.trading_calendar import get_open_markets_today
+                    if "cn" not in get_open_markets_today():
+                        logger.info("今日 A 股休市，跳过市场缓存更新。")
+                        return
+                    from src.services.market_cache_service import MarketCacheService
+                    from src.storage import get_db
+                    cache_svc = MarketCacheService(db=get_db())
+                    # Bootstrap check (only needed on first run or after data loss)
+                    if not cache_svc.is_bootstrapped():
+                        logger.info("[market-cache] 缓存不足，触发 Bootstrap...")
+                        result = cache_svc.bootstrap(days=30)
+                        logger.info("[market-cache] Bootstrap 完成: %s", result)
+                    count = cache_svc.update_today()
+                    logger.info("[market-cache] 当日数据更新完成，共 %d 只股票", count)
+                except Exception as _e:
+                    logger.error("市场缓存更新失败: %s", _e)
+                    import traceback
+                    logger.debug(traceback.format_exc())
+
+            try:
+                import schedule as _schedule_lib
+                _schedule_lib.every().day.at("15:05").do(_market_cache_task)
+                logger.info("已注册市场缓存任务：每日 15:05 执行（UTC）")
+            except Exception as _e:
+                logger.warning("注册市场缓存任务失败: %s", _e)
+
             # 每日选股扫描（收盘后 15:30 执行）
             def _screener_task():
                 try:
@@ -941,13 +1017,14 @@ def main() -> int:
                     from src.services.stock_screener import StockScreener
                     from src.notification_sender.telegram_sender import TelegramSender
                     from src.storage import get_db
+                    from data_provider.base import DataFetcherManager as _DFM
                     _runtime = _reload_runtime_config()
                     _tg = TelegramSender(_runtime) if (
                         _runtime.telegram_bot_token and _runtime.telegram_chat_id
                     ) else None
                     screener = StockScreener(
                         config=_runtime,
-                        fetcher_manager=fetcher_manager,
+                        fetcher_manager=_DFM(),
                         db=get_db(),
                         telegram_sender=_tg,
                     )

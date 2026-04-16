@@ -640,6 +640,37 @@ class ScreenerResult(Base):
     )
 
 
+class MarketDailyCache(Base):
+    """全市场日线缓存 - 每日收盘后由 spot_em() 批量写入，供选股扫描读取"""
+    __tablename__ = 'market_daily_cache'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    stock_code = Column(String(16), nullable=False)
+    stock_name = Column(String(64))
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)       # 成交量（手）
+    amount = Column(Float)       # 成交额（元）
+    change_pct = Column(Float)   # 涨跌幅(%)
+    turnover_rate = Column(Float)  # 换手率(%)
+    volume_ratio = Column(Float)   # 量比
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('trade_date', 'stock_code', name='uq_market_cache_date_code'),
+        Index('ix_market_cache_code_date', 'stock_code', 'trade_date'),
+    )
+
+
+_CACHE_COLUMNS = [
+    'trade_date', 'open', 'high', 'low', 'close',
+    'volume', 'amount', 'change_pct', 'turnover_rate', 'volume_ratio',
+]
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -2008,6 +2039,108 @@ class DatabaseManager:
                     reasons=reasons,
                 ))
             return results
+
+    def upsert_market_daily_cache(self, records: list, trade_date) -> int:
+        """
+        Bulk-upsert daily OHLCV records for all stocks on a given trade_date.
+        Uses DELETE + bulk_insert_mappings for efficiency (no N+1 queries).
+        records: list of dicts with keys: stock_code, stock_name, open, high, low,
+                 close, volume, amount, change_pct, turnover_rate, volume_ratio
+        trade_date: date object
+        Returns number of records inserted.
+        """
+        if not records:
+            return 0
+        with self.session_scope() as session:
+            # Delete existing rows for this date in one shot
+            session.execute(
+                delete(MarketDailyCache).where(MarketDailyCache.trade_date == trade_date)
+            )
+            # Bulk insert all records
+            mappings = [
+                {
+                    "trade_date": trade_date,
+                    "stock_code": r["stock_code"],
+                    "stock_name": r.get("stock_name", ""),
+                    "open": r.get("open"),
+                    "high": r.get("high"),
+                    "low": r.get("low"),
+                    "close": r.get("close"),
+                    "volume": r.get("volume"),
+                    "amount": r.get("amount"),
+                    "change_pct": r.get("change_pct"),
+                    "turnover_rate": r.get("turnover_rate"),
+                    "volume_ratio": r.get("volume_ratio"),
+                }
+                for r in records
+                if r.get("stock_code")
+            ]
+            session.bulk_insert_mappings(MarketDailyCache, mappings)
+            return len(mappings)
+
+    def get_market_cache_for_stock(self, stock_code: str, days: int = 30) -> pd.DataFrame:
+        """
+        Return up to `days` most recent cached rows for a stock, ordered oldest->newest.
+        Returns DataFrame with columns: trade_date, open, high, low, close, volume,
+        amount, change_pct, turnover_rate, volume_ratio
+        Returns empty DataFrame if no data.
+        """
+        with self.session_scope() as session:
+            rows = (
+                session.query(MarketDailyCache)
+                .filter_by(stock_code=stock_code)
+                .order_by(MarketDailyCache.trade_date.desc())
+                .limit(days)
+                .all()
+            )
+            if not rows:
+                return pd.DataFrame(columns=_CACHE_COLUMNS)
+            rows = list(reversed(rows))
+            data = [
+                {
+                    'trade_date': r.trade_date,
+                    'open': r.open,
+                    'high': r.high,
+                    'low': r.low,
+                    'close': r.close,
+                    'volume': r.volume,
+                    'amount': r.amount,
+                    'change_pct': r.change_pct,
+                    'turnover_rate': r.turnover_rate,
+                    'volume_ratio': r.volume_ratio,
+                }
+                for r in rows
+            ]
+            return pd.DataFrame(data)
+
+    def cleanup_old_market_cache(self, keep_days: int = 35) -> int:
+        """Delete cache rows older than keep_days. Returns deleted row count."""
+        cutoff = date.today() - timedelta(days=keep_days)
+        with self.session_scope() as session:
+            r = session.execute(
+                delete(MarketDailyCache).where(MarketDailyCache.trade_date < cutoff)
+            )
+            return r.rowcount or 0
+
+    def get_cached_universe(self) -> list:
+        """
+        Return list of (stock_code, stock_name) for all distinct stocks
+        in market_daily_cache, based on the most recent trade_date available.
+        Returns empty list if cache is empty.
+        """
+        with self.session_scope() as session:
+            max_date_row = session.execute(
+                select(func.max(MarketDailyCache.trade_date))
+            ).scalar()
+            if max_date_row is None:
+                return []
+            rows = (
+                session.query(MarketDailyCache.stock_code, MarketDailyCache.stock_name)
+                .filter_by(trade_date=max_date_row)
+                .distinct()
+                .all()
+            )
+            return [(r.stock_code, r.stock_name) for r in rows]
 
     def purge_old_data(self, retention_days: int) -> Dict[str, int]:
         """

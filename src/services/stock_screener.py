@@ -1,11 +1,11 @@
 # src/services/stock_screener.py
 # -*- coding: utf-8 -*-
 """
-每日全量上交所 A 股扫描服务
+每日全量 A 股扫描服务（沪深两市）
 
 流程：
-1. 从 AkShare 获取上交所全量 A 股代码列表
-2. 分批（BATCH_SIZE 只/批）逐股拉取日线数据 + 财务快照
+1. 优先从 market_daily_cache 获取全量 A 股代码列表（SH+SZ），降级使用 AkShare 上交所主板列表
+2. 分批（BATCH_SIZE 只/批）逐股从缓存读取日线数据 + 财务快照，无缓存时降级实时拉取
 3. 用 ScreenerScorer 计算综合得分
 4. 结果存入 screener_results 表
 5. 推送 top 10 到 Telegram
@@ -41,8 +41,18 @@ class StockScreener:
     # Universe
     # ------------------------------------------------------------------
 
+    def get_universe(self) -> List[Tuple[str, str]]:
+        """Get full A-share universe from market_daily_cache. Falls back to AkShare SH list."""
+        universe = self._db.get_cached_universe()
+        if universe:
+            logger.info("从缓存加载股票池：%d 只", len(universe))
+            return universe
+        # Fallback: SH main board only (legacy)
+        logger.warning("缓存为空，降级使用上交所主板股票列表")
+        return self.get_sh_stock_universe()
+
     def get_sh_stock_universe(self) -> List[Tuple[str, str]]:
-        """Fetch all SH A-share stocks. Returns list of (code, name)."""
+        """Legacy: fetch SH A-share list from AkShare. Used as fallback."""
         try:
             import akshare as ak
             df = ak.stock_info_sh_name_code(symbol="主板A股")
@@ -92,7 +102,7 @@ class StockScreener:
         logger.info("开始每日全量扫描 (date=%s)", scan_date)
 
         try:
-            universe = self.get_sh_stock_universe()
+            universe = self.get_universe()
         except Exception as e:
             msg = f"获取股票列表失败，扫描中止: {e}"
             logger.error(msg)
@@ -111,10 +121,7 @@ class StockScreener:
             scanned += len(batch)
             logger.info("批次 %d 完成，已扫描 %d/%d", batch_num, scanned, len(universe))
 
-            # Inter-batch delay
-            if scanned < len(universe):
-                pause = random.uniform(*INTER_BATCH_DELAY)
-                time.sleep(pause)
+            # Inter-batch delay removed: cache reads do not need rate limiting
 
         # Persist all results
         if all_results:
@@ -150,22 +157,31 @@ class StockScreener:
                     else:
                         logger.warning("股票 %s 跳过（失败 %d 次）: %s", code, MAX_RETRIES + 1, e)
 
-            # Intra-batch delay between each stock
-            time.sleep(random.uniform(*INTRA_BATCH_DELAY))
+            # Intra-batch delay removed: cache reads do not need rate limiting
 
         return results
 
     def _score_stock(self, code, name, trend_analyzer, ScreenerScorer):
-        """Fetch data for one stock and return a ScreenerResult, or None on skip."""
-        # 1. Daily price data (30 days)
-        df, _ = self._fetcher.get_daily_data(code, days=30)
-        if df is None or df.empty or len(df) < 5:
-            return None
+        """Fetch data from cache (preferred) or live, then score."""
+        # 1. Try cache first
+        df = self._db.get_market_cache_for_stock(code, days=30)
 
-        # 2. Technical analysis (no index data for screener — fast mode)
+        if df is None or df.empty or len(df) < 5:
+            # 2. Fallback to live fetch
+            if self._fetcher is not None:
+                df, _ = self._fetcher.get_daily_data(code, days=30)
+            if df is None or df.empty or len(df) < 5:
+                return None
+
+        # 3. Rename columns if needed — cache uses: open, high, low, close, volume, amount
+        # TrendAnalyzer expects: standard OHLCV DataFrame with date index or date column
+        if 'trade_date' in df.columns and 'date' not in df.columns:
+            df = df.rename(columns={'trade_date': 'date'})
+
+        # 4. Technical analysis
         trend_result = trend_analyzer.analyze(df, code)
 
-        # 3. Financial data (from cache or fetch)
+        # 5. Financial data from DB cache or FundamentalAdapter
         financial_report = {}
         try:
             snap = self._db.get_latest_fundamental_snapshot(code)
@@ -200,7 +216,7 @@ class StockScreener:
             return
 
         medals = ["🥇", "🥈", "🥉"] + ["  "] * 7
-        lines = [f"📊 每日选股 Top 10（{scan_date}）",
+        lines = [f"📊 全市场选股 Top 10（{scan_date}）",
                  f"扫描完成 {scanned}/{total} 只（耗时 {elapsed}）", ""]
 
         for i, r in enumerate(top10):
