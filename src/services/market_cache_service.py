@@ -79,23 +79,32 @@ class MarketCacheService:
             trade_date = date.today()
 
         import akshare as ak
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
         df = None
         use_sina = False
+        _SPOT_EM_TIMEOUT = 45  # spot_em() 内部分页较多，给 45s 总超时
 
-        # 尝试东方财富（最多 2 次）
+        # 尝试东方财富（最多 2 次，每次最多 45s）
         last_exc = None
         for attempt in range(2):
             try:
-                df = ak.stock_zh_a_spot_em()
-                break
+                with ThreadPoolExecutor(max_workers=1) as _ex:
+                    _fut = _ex.submit(ak.stock_zh_a_spot_em)
+                    try:
+                        df = _fut.result(timeout=_SPOT_EM_TIMEOUT)
+                        break
+                    except FuturesTimeout:
+                        logger.warning(
+                            f"spot_em() 第 {attempt + 1} 次超时（>{_SPOT_EM_TIMEOUT}s），跳过"
+                        )
             except Exception as exc:
                 last_exc = exc
                 logger.warning(f"spot_em() 第 {attempt + 1} 次调用失败: {exc}")
 
         # 降级到新浪
         if df is None:
-            logger.warning("spot_em() 连续失败，降级到新浪 stock_zh_a_spot()")
+            logger.warning("spot_em() 不可用，降级到新浪 stock_zh_a_spot()")
             try:
                 df = ak.stock_zh_a_spot()
                 use_sina = True
