@@ -836,10 +836,16 @@ def main() -> int:
             _db = get_db()
             cache_svc = MarketCacheService(db=_db)
 
+            _tg = TelegramSender(config) if (
+                getattr(config, 'telegram_bot_token', None) and
+                getattr(config, 'telegram_chat_id', None)
+            ) else None
+            _notify = _tg.send_to_telegram if _tg else None
+
             # Step 1: Bootstrap if needed
             if not cache_svc.is_bootstrapped():
                 logger.info("[market-scan] 缓存不足，开始 Bootstrap 历史数据（约 5-15 分钟）...")
-                result = cache_svc.bootstrap(days=30)
+                result = cache_svc.bootstrap(days=30, notify_fn=_notify)
                 logger.info("[market-scan] Bootstrap 完成: %s", result)
             else:
                 logger.info("[market-scan] 缓存已就绪，跳过 Bootstrap")
@@ -851,10 +857,6 @@ def main() -> int:
 
             # Step 3: Run screener
             logger.info("[market-scan] Phase 2: 全市场评分扫描...")
-            _tg = TelegramSender(config) if (
-                getattr(config, 'telegram_bot_token', None) and
-                getattr(config, 'telegram_chat_id', None)
-            ) else None
             from data_provider.base import DataFetcherManager
             screener = StockScreener(
                 config=config,
@@ -986,11 +988,17 @@ def main() -> int:
                         return
                     from src.services.market_cache_service import MarketCacheService
                     from src.storage import get_db
+                    from src.notification_sender.telegram_sender import TelegramSender
                     cache_svc = MarketCacheService(db=get_db())
+                    _tg_cache = TelegramSender(config) if (
+                        getattr(config, 'telegram_bot_token', None) and
+                        getattr(config, 'telegram_chat_id', None)
+                    ) else None
+                    _notify_cache = _tg_cache.send_to_telegram if _tg_cache else None
                     # Bootstrap check (only needed on first run or after data loss)
                     if not cache_svc.is_bootstrapped():
                         logger.info("[market-cache] 缓存不足，触发 Bootstrap...")
-                        result = cache_svc.bootstrap(days=30)
+                        result = cache_svc.bootstrap(days=30, notify_fn=_notify_cache)
                         logger.info("[market-cache] Bootstrap 完成: %s", result)
                     count = cache_svc.update_today()
                     logger.info("[market-cache] 当日数据更新完成，共 %d 只股票", count)

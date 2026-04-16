@@ -124,32 +124,39 @@ class MarketCacheService:
     # bootstrap
     # ------------------------------------------------------------------
 
-    def bootstrap(self, days: int = 30) -> dict:
+    def bootstrap(self, days: int = 30, notify_fn=None) -> dict:
         """
-        用 Pytdx 批量补齐历史 K 线缓存（首次运行或缓存为空时使用）。
+        用 AkShare stock_zh_a_hist() 补齐历史 K 线缓存（首次运行或缓存为空时使用）。
+        使用 AkShare 而非 Pytdx，确保境外服务器也可访问。
 
         Args:
-            days: 向前补齐的交易日数量（含节假日 buffer，实际用 days*2 日历天）
+            days:      向前补齐的交易日数量（实际用 days*2 日历天作为 buffer）
+            notify_fn: 可选回调 fn(text)，用于推送进度通知（如 Telegram）
 
         Returns:
             {"stocks_processed": N, "dates_cached": M, "errors": K}
         """
         import akshare as ak
+        import pandas as pd
 
         # 1. 获取全市场 A 股代码清单
         stocks = self._fetch_universe(ak)
-        logger.info(f"bootstrap: 共 {len(stocks)} 只股票待处理")
+        total = len(stocks)
+        logger.info(f"bootstrap: 共 {total} 只股票待处理")
+        if notify_fn:
+            try:
+                notify_fn(f"📦 全市场 Bootstrap 开始\n共 {total} 只股票，预计 10-30 分钟...")
+            except Exception:
+                pass
 
         # 2. 计算日期范围
         end_date = date.today()
         start_date = end_date - timedelta(days=days * 2)
-        start_str = start_date.strftime("%Y-%m-%d")
-        end_str = end_date.strftime("%Y-%m-%d")
+        start_str = start_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
 
-        # 3. 并发抓取
-        from data_provider.pytdx_fetcher import PytdxFetcher
-
-        # 按日期分组的记录汇总
+        # 3. 并发抓取（AkShare stock_zh_a_hist，境外可访问）
+        # 限制线程数为 3，避免东财接口并发过高触发封禁
         date_records: dict = defaultdict(list)
         errors = 0
         processed = 0
@@ -157,50 +164,49 @@ class MarketCacheService:
         def _fetch_one(item):
             code, name = item
             try:
-                # Create a new PytdxFetcher instance per thread to avoid data race
-                # on mutable _current_host_idx attribute
-                local_fetcher = PytdxFetcher()
-                # Using private _fetch_raw_data() directly to access raw Pytdx column names
-                # (datetime, open, high, low, close, vol, amount) before normalization.
-                # If PytdxFetcher internals change, update the column mapping below.
-                df = local_fetcher._fetch_raw_data(code, start_str, end_str)
+                df = ak.stock_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=start_str,
+                    end_date=end_str,
+                    adjust="qfq",
+                )
                 if df is None or df.empty:
                     return []
                 rows = []
                 for _, row in df.iterrows():
                     try:
-                        trade_dt = row["datetime"]
+                        trade_dt = row.get("日期") or row.get("date")
+                        if trade_dt is None:
+                            continue
                         if hasattr(trade_dt, "date"):
                             trade_dt = trade_dt.date()
                         else:
-                            import pandas as pd
                             trade_dt = pd.to_datetime(trade_dt).date()
-                        rows.append(
-                            (
-                                trade_dt,
-                                {
-                                    "stock_code": code,
-                                    "stock_name": name,
-                                    "open": _safe_float(row.get("open")),
-                                    "high": _safe_float(row.get("high")),
-                                    "low": _safe_float(row.get("low")),
-                                    "close": _safe_float(row.get("close")),
-                                    "volume": _safe_float(row.get("vol")),
-                                    "amount": _safe_float(row.get("amount")),
-                                    "change_pct": None,
-                                    "turnover_rate": None,
-                                    "volume_ratio": None,
-                                },
-                            )
-                        )
+                        rows.append((
+                            trade_dt,
+                            {
+                                "stock_code": code,
+                                "stock_name": name,
+                                "open":         _safe_float(row.get("开盘") or row.get("open")),
+                                "high":         _safe_float(row.get("最高") or row.get("high")),
+                                "low":          _safe_float(row.get("最低") or row.get("low")),
+                                "close":        _safe_float(row.get("收盘") or row.get("close")),
+                                "volume":       _safe_float(row.get("成交量") or row.get("volume")),
+                                "amount":       _safe_float(row.get("成交额") or row.get("amount")),
+                                "change_pct":   _safe_float(row.get("涨跌幅")),
+                                "turnover_rate": _safe_float(row.get("换手率")),
+                                "volume_ratio": None,
+                            },
+                        ))
                     except Exception as row_exc:
                         logger.debug(f"bootstrap row parse error {code}: {row_exc}")
                 return rows
             except Exception as exc:
                 logger.debug(f"bootstrap fetch error {code}: {exc}")
-                return None  # 标记为错误
+                return None
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {executor.submit(_fetch_one, item): item for item in stocks}
             for future in as_completed(futures):
                 result = future.result()
@@ -211,10 +217,13 @@ class MarketCacheService:
                     for trade_dt, rec in result:
                         date_records[trade_dt].append(rec)
                 if processed % 500 == 0:
-                    logger.info(
-                        f"bootstrap 进度: {processed}/{len(stocks)}，"
-                        f"错误: {errors}"
-                    )
+                    msg = (f"bootstrap 进度: {processed}/{total}，错误: {errors}")
+                    logger.info(msg)
+                    if notify_fn:
+                        try:
+                            notify_fn(f"📦 Bootstrap 进度: {processed}/{total} 只（错误 {errors}）")
+                        except Exception:
+                            pass
 
         # 4. 按日期写入 DB
         dates_cached = 0
@@ -224,10 +233,16 @@ class MarketCacheService:
                 self._db.upsert_market_daily_cache(day_records, trade_dt)
                 dates_cached += 1
 
-        logger.info(
+        summary = (
             f"bootstrap 完成: 处理 {processed} 只股票，"
             f"缓存 {dates_cached} 个交易日，错误 {errors} 只"
         )
+        logger.info(summary)
+        if notify_fn:
+            try:
+                notify_fn(f"✅ Bootstrap 完成\n{processed} 只股票 / {dates_cached} 个交易日 / {errors} 只失败")
+            except Exception:
+                pass
         return {
             "stocks_processed": processed,
             "dates_cached": dates_cached,
