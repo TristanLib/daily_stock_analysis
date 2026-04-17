@@ -40,10 +40,11 @@ class TestFundamentalScore:
         assert score >= 85
 
     def test_poor_financials_score_low(self):
+        # PE/PB unknown → neutral(50) adds ~15pts; threshold is 30 not 25
         report = {"roe": 2.0, "gross_margin": 10.0,
                   "revenue_yoy": -5.0, "net_profit_yoy": -10.0, "debt_to_assets": 80.0}
         score = ScreenerScorer.score_fundamental(report)
-        assert score <= 25
+        assert score <= 30
 
     def test_missing_data_returns_neutral(self):
         score = ScreenerScorer.score_fundamental({})

@@ -7,13 +7,18 @@
   signal_score 40% + MA排列 15% + 量能 15% + 个股强弱 30%
 
 财务得分（0-100）：
-  ROE 30% + 毛利率 25% + 营收同比 15% + 净利润同比 15% + 资产负债率 15%
+  质量：ROE 20% + 毛利率 20%
+  成长：营收同比 10% + 净利润同比 10%
+  估值：PE 20% + PB 10%
+  安全：资产负债率 10%
 
 综合得分 = 技术 × 60% + 财务 × 40%
+
+PE 硬过滤：PE > 50 的股票在筛选器中直接跳过（由 StockScreener 执行，非本模块）
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -24,6 +29,9 @@ class ScreenerResult:
     fund_score: float = 0.0
     total_score: float = 0.0
     reasons: List[str] = field(default_factory=list)
+    pe_ratio: Optional[float] = None
+    pb_ratio: Optional[float] = None
+    dividend_yield: Optional[float] = None
 
 
 class ScreenerScorer:
@@ -78,6 +86,7 @@ class ScreenerScorer:
     def score_fundamental(financial_report: Dict[str, Any]) -> float:
         """
         Score fundamental indicators from financial_report dict.
+        Accepts merged dict with keys from financial_report + pe_ratio + pb_ratio.
         Missing values default to neutral (50).
         Returns float 0-100.
         """
@@ -88,7 +97,7 @@ class ScreenerScorer:
             except (TypeError, ValueError):
                 return None
 
-        # ROE (30%)
+        # ROE (20%)
         roe = _get('roe')
         if roe is None:
             roe_score = 50.0
@@ -103,7 +112,7 @@ class ScreenerScorer:
         else:
             roe_score = 10.0
 
-        # Gross margin (25%)
+        # Gross margin (20%)
         gm = _get('gross_margin')
         if gm is None:
             gm_score = 50.0
@@ -116,7 +125,7 @@ class ScreenerScorer:
         else:
             gm_score = 30.0
 
-        # Revenue YoY (15%)
+        # Revenue YoY (10%)
         rev_yoy = _get('revenue_yoy')
         if rev_yoy is None:
             rev_score = 50.0
@@ -131,7 +140,7 @@ class ScreenerScorer:
         else:
             rev_score = 10.0
 
-        # Net profit YoY (15%)
+        # Net profit YoY (10%)
         np_yoy = _get('net_profit_yoy')
         if np_yoy is None:
             np_score = 50.0
@@ -146,7 +155,7 @@ class ScreenerScorer:
         else:
             np_score = 10.0
 
-        # Debt-to-assets (15%, lower = better)
+        # Debt-to-assets (10%, lower = better)
         d2a = _get('debt_to_assets')
         if d2a is None:
             d2a_score = 50.0
@@ -159,16 +168,51 @@ class ScreenerScorer:
         else:
             d2a_score = 10.0
 
+        # PE ratio (20%, lower = better; None treated as neutral)
+        pe = _get('pe_ratio')
+        if pe is None or pe <= 0:
+            pe_score = 50.0
+        elif pe <= 15:
+            pe_score = 100.0
+        elif pe <= 25:
+            pe_score = 80.0
+        elif pe <= 35:
+            pe_score = 60.0
+        elif pe <= 50:
+            pe_score = 40.0
+        else:
+            pe_score = 10.0
+
+        # PB ratio (10%, lower = better; None treated as neutral)
+        pb = _get('pb_ratio')
+        if pb is None or pb <= 0:
+            pb_score = 50.0
+        elif pb <= 2:
+            pb_score = 100.0
+        elif pb <= 4:
+            pb_score = 75.0
+        elif pb <= 8:
+            pb_score = 50.0
+        else:
+            pb_score = 20.0
+
         return round(
-            roe_score * 0.30 + gm_score * 0.25 + rev_score * 0.15
-            + np_score * 0.15 + d2a_score * 0.15,
+            roe_score * 0.20 + gm_score * 0.20 + rev_score * 0.10
+            + np_score * 0.10 + d2a_score * 0.10
+            + pe_score * 0.20 + pb_score * 0.10,
             2
         )
 
     @staticmethod
     def score(stock_code: str, stock_name: str,
-              trend_result, financial_report: Dict[str, Any]) -> ScreenerResult:
-        """Compute composite score and build a ScreenerResult."""
+              trend_result, financial_report: Dict[str, Any],
+              dividend_yield: Optional[float] = None) -> ScreenerResult:
+        """
+        Compute composite score and build a ScreenerResult.
+        financial_report should be pre-merged with pe_ratio and pb_ratio
+        from the valuation snapshot before calling this method.
+        dividend_yield is display-only and does not affect scoring.
+        """
         tech = ScreenerScorer.score_technical(trend_result)
         fund = ScreenerScorer.score_fundamental(financial_report)
         total = round(tech * 0.6 + fund * 0.4, 2)
@@ -187,6 +231,12 @@ class ScreenerScorer:
             except (TypeError, ValueError):
                 pass
 
+        def _safe_float(v):
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
         return ScreenerResult(
             stock_code=stock_code,
             stock_name=stock_name,
@@ -194,4 +244,7 @@ class ScreenerScorer:
             fund_score=fund,
             total_score=total,
             reasons=reasons,
+            pe_ratio=_safe_float(financial_report.get('pe_ratio')),
+            pb_ratio=_safe_float(financial_report.get('pb_ratio')),
+            dividend_yield=_safe_float(dividend_yield),
         )

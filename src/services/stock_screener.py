@@ -236,20 +236,47 @@ class StockScreener:
 
         # 5. Financial data from DB cache or FundamentalAdapter
         financial_report = {}
+        valuation = {}
+        dividend_yield = None
         try:
             snap = self._db.get_latest_fundamental_snapshot(code)
-            if snap and snap.get("earnings"):
-                financial_report = snap["earnings"].get("financial_report", {}) or {}
+            if snap:
+                if snap.get("earnings"):
+                    financial_report = snap["earnings"].get("financial_report", {}) or {}
+                    div = snap["earnings"].get("dividend") or {}
+                    dividend_yield = div.get("ttm_dividend_yield_pct")
+                if snap.get("valuation"):
+                    valuation = snap["valuation"].get("data") or {}
             else:
                 from data_provider.fundamental_adapter import FundamentalAdapter
                 adapter = FundamentalAdapter()
                 ctx = adapter.get_fundamental_context(code)
-                if ctx and ctx.get("earnings"):
-                    financial_report = ctx["earnings"].get("financial_report", {}) or {}
+                if ctx:
+                    if ctx.get("earnings"):
+                        financial_report = ctx["earnings"].get("financial_report", {}) or {}
+                        div = ctx["earnings"].get("dividend") or {}
+                        dividend_yield = div.get("ttm_dividend_yield_pct")
+                    if ctx.get("valuation"):
+                        valuation = ctx["valuation"].get("data") or {}
         except Exception as e:
             logger.debug("获取 %s 财务数据失败（跳过财务评分）: %s", code, e)
 
-        return ScreenerScorer.score(code, name, trend_result, financial_report)
+        # PE hard filter: skip stocks with PE > 50 (unknown PE passes through)
+        pe_ratio = valuation.get("pe_ratio")
+        try:
+            pe_val = float(pe_ratio) if pe_ratio is not None else None
+        except (TypeError, ValueError):
+            pe_val = None
+        if pe_val is not None and pe_val > 50:
+            logger.debug("跳过 %s：PE=%.1f > 50", code, pe_val)
+            return None
+
+        # Merge valuation fields into financial_report for scoring
+        merged = {**financial_report,
+                  "pe_ratio": pe_val,
+                  "pb_ratio": valuation.get("pb_ratio")}
+
+        return ScreenerScorer.score(code, name, trend_result, merged, dividend_yield)
 
     # ------------------------------------------------------------------
     # Notification
@@ -274,11 +301,15 @@ class StockScreener:
 
         for i, r in enumerate(top10):
             reasons_str = "、".join(r.reasons[:3]) if r.reasons else "综合评分"
+            pe_str = f"PE:{r.pe_ratio:.1f}" if r.pe_ratio is not None and r.pe_ratio > 0 else "PE:N/A"
+            pb_str = f"PB:{r.pb_ratio:.1f}" if r.pb_ratio is not None and r.pb_ratio > 0 else "PB:N/A"
+            dy_str = f"股息:{r.dividend_yield:.1f}%" if r.dividend_yield is not None and r.dividend_yield > 0 else "股息:N/A"
             lines.append(
                 f"{medals[i]} {i + 1}. {r.stock_code} {r.stock_name} | 综合 {r.total_score:.0f}分"
             )
             lines.append(
-                f"   技术 {r.tech_score:.0f} | 财务 {r.fund_score:.0f} | {reasons_str}"
+                f"   技术 {r.tech_score:.0f} | 财务 {r.fund_score:.0f} | {pe_str} {pb_str} {dy_str}"
             )
+            lines.append(f"   {reasons_str}")
 
         self._notify("\n".join(lines))
