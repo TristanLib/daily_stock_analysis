@@ -1009,8 +1009,8 @@ def main() -> int:
 
             try:
                 import schedule as _schedule_lib
-                _schedule_lib.every().day.at("15:05").do(_market_cache_task)
-                logger.info("已注册市场缓存任务：每日 15:05 执行（UTC）")
+                _schedule_lib.every().day.at("07:05").do(_market_cache_task)
+                logger.info("已注册市场缓存任务：每日 07:05 执行（UTC = 15:05 北京时间）")
             except Exception as _e:
                 logger.warning("注册市场缓存任务失败: %s", _e)
 
@@ -1044,8 +1044,8 @@ def main() -> int:
 
             try:
                 import schedule as _schedule_lib
-                _schedule_lib.every().day.at("15:30").do(_screener_task)
-                logger.info("已注册每日选股任务：每日 15:30 执行（UTC）")
+                _schedule_lib.every().day.at("07:30").do(_screener_task)
+                logger.info("已注册每日选股任务：每日 07:30 执行（UTC = 15:30 北京时间）")
             except Exception as _e:
                 logger.warning("注册每日选股任务失败: %s", _e)
 
