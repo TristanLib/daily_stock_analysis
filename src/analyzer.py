@@ -385,6 +385,11 @@ class AnalysisResult:
     rs_trend: str = ""        # 强弱趋势描述
     rs_ma_trend: str = ""     # RS线均线方向：up / down / flat
 
+    # ========== 全市场一致量化评分（与 ScreenerScorer 算法对齐）==========
+    screener_score: Optional[float] = None       # 综合评分（技术60% + 财务40%）；None=技术数据不足未评分
+    screener_tech_score: Optional[float] = None  # 技术评分
+    screener_fund_score: Optional[float] = None  # 财务评分
+
     # ========== 价格数据（分析时快照）==========
     current_price: Optional[float] = None  # 分析时的股价
     change_pct: Optional[float] = None     # 分析时的涨跌幅(%)
@@ -1482,6 +1487,7 @@ class GeminiAnalyzer:
 | 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | 系统信号 | {trend.get('buy_signal', unknown_text)} | |
 | 系统评分 | {trend.get('signal_score', 0)}/100 | |
+{f"| **综合评分(选股算法)** | **{trend['screener_score']:.0f}/100** | 技术{trend['screener_tech_score']:.0f} · 财务{trend['screener_fund_score']:.0f} |" if trend.get('screener_score') is not None else ""}
 | **个股强弱** | **{trend.get('rs_signal', unknown_text)}** | {trend.get('rs_trend', '')} |
 | 今日vs大盘 | {trend.get('rs_today', 0):+.2f}个百分点 | 正值=跑赢大盘 |
 | 5日相对强弱 | {trend.get('rs_5d', 0):.2f}x | >1跑赢，<1跑输 |
@@ -1512,6 +1518,7 @@ class GeminiAnalyzer:
 | 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | 系统信号 | {trend.get('buy_signal', unknown_text)} | |
 | 系统评分 | {trend.get('signal_score', 0)}/100 | |
+{f"| **综合评分(选股算法)** | **{trend['screener_score']:.0f}/100** | 技术{trend['screener_tech_score']:.0f} · 财务{trend['screener_fund_score']:.0f} |" if trend.get('screener_score') is not None else ""}
 | **个股强弱** | **{trend.get('rs_signal', unknown_text)}** | {trend.get('rs_trend', '')} |
 | 今日vs大盘 | {trend.get('rs_today', 0):+.2f}个百分点 | 正值=跑赢大盘 |
 | 5日相对强弱 | {trend.get('rs_5d', 0):.2f}x | >1跑赢，<1跑输 |

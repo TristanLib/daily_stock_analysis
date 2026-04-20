@@ -457,6 +457,13 @@ class StockAnalysisPipeline:
                 result.rs_trend = trend_result.rs_trend
                 result.rs_ma_trend = getattr(trend_result, 'rs_ma_trend', '')
 
+            # Step 7.9: 回写全市场一致量化评分到 AnalysisResult（None=技术数据不足未评分）
+            if result and enhanced_context.get('trend_analysis'):
+                _ta = enhanced_context['trend_analysis']
+                result.screener_score = _ta.get('screener_score')
+                result.screener_tech_score = _ta.get('screener_tech_score')
+                result.screener_fund_score = _ta.get('screener_fund_score')
+
             # Step 8: 保存分析历史记录
             if result:
                 try:
@@ -654,6 +661,16 @@ class StockAnalysisPipeline:
             )
         )
 
+        # 注入与全市场选股算法一致的综合评分（技术60% + 财务40%）
+        if trend_result and enhanced.get('trend_analysis') is not None:
+            _screener = self._compute_screener_score(trend_result, fundamental_context)
+            if _screener:
+                enhanced['trend_analysis'].update({
+                    'screener_score': _screener.total_score,
+                    'screener_tech_score': _screener.tech_score,
+                    'screener_fund_score': _screener.fund_score,
+                })
+
         return enhanced
 
     def _attach_belong_boards_to_fundamental_context(
@@ -707,6 +724,37 @@ class StockAnalysisPipeline:
         enriched_context["belong_boards"] = boards
         return enriched_context
 
+    @staticmethod
+    def _compute_screener_score(trend_result, fundamental_context):
+        """
+        用与全市场选股完全相同的 ScreenerScorer 算法计算综合评分。
+        技术60% + 财务40%，返回 ScreenerResult 或 None（异常时静默降级）。
+
+        注意：全市场扫描中 PE > 50 会在 StockScreener._score_stock() 直接跳过该股，
+        但此处不做硬过滤——自选股池内的股票始终应当得到评分，即使 PE 偏高。
+        """
+        try:
+            from src.services.screener_scorer import ScreenerScorer
+            financial_report: dict = {}
+            valuation: dict = {}
+            dividend_yield = None
+            if isinstance(fundamental_context, dict):
+                earnings = fundamental_context.get("earnings") or {}
+                financial_report = earnings.get("financial_report") or {}
+                div = earnings.get("dividend") or {}
+                dividend_yield = div.get("ttm_dividend_yield_pct")
+                val_block = fundamental_context.get("valuation") or {}
+                valuation = val_block.get("data") or {}
+            merged = {
+                **financial_report,
+                "pe_ratio": valuation.get("pe_ratio"),
+                "pb_ratio": valuation.get("pb_ratio"),
+            }
+            return ScreenerScorer.score("", "", trend_result, merged, dividend_yield)
+        except Exception as e:
+            logger.debug("计算 ScreenerScorer 评分失败: %s", e)
+            return None
+
     def _analyze_with_agent(
         self, 
         code: str, 
@@ -744,6 +792,15 @@ class StockAnalysisPipeline:
             if trend_result:
                 initial_context["trend_result"] = self._safe_to_dict(trend_result)
 
+            # 注入与全市场选股算法一致的综合评分（技术60% + 财务40%）
+            _agent_screener = self._compute_screener_score(trend_result, fundamental_context)
+            if _agent_screener:
+                initial_context["screener_score"] = {
+                    "total": _agent_screener.total_score,
+                    "tech": _agent_screener.tech_score,
+                    "fund": _agent_screener.fund_score,
+                }
+
             # Agent path: inject social sentiment as news_context so both
             # executor (_build_user_message) and orchestrator (ctx.set_data)
             # can consume it through the existing news_context channel
@@ -771,6 +828,10 @@ class StockAnalysisPipeline:
             result = self._agent_result_to_analysis_result(agent_result, code, stock_name, report_type, query_id)
             if result:
                 result.query_id = query_id
+                if _agent_screener:
+                    result.screener_score = _agent_screener.total_score
+                    result.screener_tech_score = _agent_screener.tech_score
+                    result.screener_fund_score = _agent_screener.fund_score
             # Agent weak integrity: placeholder fill only, no LLM retry
             if result and getattr(self.config, "report_integrity_enabled", False):
                 from src.analyzer import check_content_integrity, apply_placeholder_fill

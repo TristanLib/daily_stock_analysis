@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 定时任务新增 15:05 市场缓存预取阶段（Phase 1），与 15:30 选股扫描（Phase 2）解耦，分析期间无需实时 API 调用
 - [修复] 定时选股任务中 `fetcher_manager` 未定义导致的潜在 NameError（改为在任务内部按需初始化 `DataFetcherManager`）
 - [新功能] Top10 推荐追踪：新增 `screener_tracking` 表记录每日 Top10 及推荐当日收盘基准价；下一交易日选股扫描前自动填充次日开盘/收盘/涨跌幅，计算准确率并推送 Telegram 追踪报告
+- [改进] 自选股与全市场评分算法对齐：个股分析流程新增与 ScreenerScorer 完全一致的量化综合评分（技术60%+财务40%），注入 LLM prompt 供参考，并回写到 AnalysisResult；自选股不做 PE>50 硬过滤（始终给出评分）
 
 ## [3.12.0] - 2026-04-01
 
