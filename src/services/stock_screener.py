@@ -133,6 +133,9 @@ class StockScreener:
 
         logger.info("开始每日全量扫描 (date=%s)", scan_date)
 
+        # 先追踪上次 Top10 的次日表现，再开始本次扫描
+        self._run_tracking_report(scan_date)
+
         try:
             universe = self.get_universe()
         except Exception as e:
@@ -174,6 +177,13 @@ class StockScreener:
         # Get top 10 and notify
         top10 = sorted(all_results, key=lambda r: r.total_score, reverse=True)[:10]
         self._send_top10(top10, scan_date, scanned, len(universe), elapsed_str)
+
+        # Save tracking records for this scan's top 10 (next scan will fill prices)
+        try:
+            self._db.save_screener_tracking(top10, scan_date)
+            logger.info("已保存 Top10 追踪记录（%s）", scan_date)
+        except Exception as e:
+            logger.warning("保存追踪记录失败: %s", e)
 
         logger.info("扫描完成 %d/%d 只，耗时 %s", scanned, len(universe), elapsed_str)
         return all_results
@@ -313,3 +323,105 @@ class StockScreener:
             lines.append(f"   {reasons_str}")
 
         self._notify("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # Tracking
+    # ------------------------------------------------------------------
+
+    def _run_tracking_report(self, today: datetime.date) -> None:
+        """
+        用今日市场缓存填充上次 Top10 的次日价格，并推送追踪报告。
+        若无待追踪记录则静默跳过。
+        """
+        try:
+            filled = self._db.fill_tracking_prices(today)
+            if filled == 0:
+                return
+
+            # 找到刚刚被填充的推荐日期（最近一条 tracking_date=today 的 recommend_date）
+            report = self._build_tracking_report(today)
+            if report:
+                self._notify(report)
+        except Exception as e:
+            logger.warning("追踪报告生成失败: %s", e)
+
+    def _build_tracking_report(self, tracking_date: datetime.date) -> str:
+        """生成 Tracking 日期对应的推荐追踪报告文本。"""
+        # 找所有 tracking_date=today 的记录（可能跨多个 recommend_date）
+        from sqlalchemy import and_
+        from src.storage import ScreenerTracking
+
+        rows = []
+        try:
+            with self._db.get_session() as session:
+                rows = (
+                    session.query(ScreenerTracking)
+                    .filter_by(tracking_date=tracking_date)
+                    .order_by(
+                        ScreenerTracking.recommend_date.desc(),
+                        ScreenerTracking.rank,
+                    )
+                    .all()
+                )
+                rows = [
+                    {
+                        "recommend_date": r.recommend_date,
+                        "rank": r.rank,
+                        "stock_code": r.stock_code,
+                        "stock_name": r.stock_name,
+                        "total_score": r.total_score,
+                        "change_pct": r.change_pct,
+                        "is_accurate": r.is_accurate,
+                    }
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.warning("读取追踪记录失败: %s", e)
+            return ""
+
+        if not rows:
+            return ""
+
+        # 按 recommend_date 分组
+        from collections import defaultdict
+        groups: dict = defaultdict(list)
+        for row in rows:
+            groups[row["recommend_date"]].append(row)
+
+        lines = [f"📈 Top10 追踪报告（追踪日：{tracking_date}）", ""]
+        total_valid = 0
+        total_accurate = 0
+
+        for rec_date in sorted(groups.keys(), reverse=True):
+            group = groups[rec_date]
+            accurate = [r for r in group if r["is_accurate"] is True]
+            inaccurate = [r for r in group if r["is_accurate"] is False]
+            unknown = [r for r in group if r["is_accurate"] is None]
+            valid = len(accurate) + len(inaccurate)
+            accuracy = len(accurate) / valid * 100 if valid > 0 else None
+            total_valid += valid
+            total_accurate += len(accurate)
+
+            acc_str = f"{accuracy:.0f}%" if accuracy is not None else "N/A"
+            lines.append(f"📅 推荐日：{rec_date}  准确率：{acc_str} ({len(accurate)}/{valid})")
+
+            for r in group:
+                chg = r["change_pct"]
+                chg_str = f"{chg:+.2f}%" if chg is not None else "N/A"
+                if r["is_accurate"] is True:
+                    icon = "✅"
+                elif r["is_accurate"] is False:
+                    icon = "❌"
+                else:
+                    icon = "❓"
+                lines.append(
+                    f"  {icon} {r['rank']}. {r['stock_code']} {r['stock_name']} "
+                    f"| {chg_str} | 评分:{r['total_score']:.0f}"
+                )
+            lines.append("")
+
+        if total_valid > 0 and len(groups) > 1:
+            overall = total_accurate / total_valid * 100
+            lines.append(f"📊 综合准确率：{overall:.0f}% ({total_accurate}/{total_valid})")
+
+        return "\n".join(lines)

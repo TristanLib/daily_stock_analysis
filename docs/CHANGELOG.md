@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] `--market-scan` CLI 参数：支持手动触发一次全市场扫描（Bootstrap + 当日数据更新 + 评分推送），方便首次验证
 - [改进] 定时任务新增 15:05 市场缓存预取阶段（Phase 1），与 15:30 选股扫描（Phase 2）解耦，分析期间无需实时 API 调用
 - [修复] 定时选股任务中 `fetcher_manager` 未定义导致的潜在 NameError（改为在任务内部按需初始化 `DataFetcherManager`）
+- [新功能] Top10 推荐追踪：新增 `screener_tracking` 表记录每日 Top10 及推荐当日收盘基准价；下一交易日选股扫描前自动填充次日开盘/收盘/涨跌幅，计算准确率并推送 Telegram 追踪报告
 
 ## [3.12.0] - 2026-04-01
 

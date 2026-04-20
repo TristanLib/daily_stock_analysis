@@ -640,6 +640,29 @@ class ScreenerResult(Base):
     )
 
 
+class ScreenerTracking(Base):
+    """Top10 推荐追踪记录 - 记录推荐后次日实际表现，用于准确率统计"""
+    __tablename__ = 'screener_tracking'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    recommend_date = Column(Date, nullable=False, index=True)
+    stock_code = Column(String(16), nullable=False)
+    stock_name = Column(String(64))
+    rank = Column(Integer)
+    total_score = Column(Float)
+    ref_close = Column(Float)        # 推荐当日收盘价
+    tracking_date = Column(Date, index=True)   # 实际追踪日期（下一交易日）
+    open_price = Column(Float)       # 追踪日开盘价
+    close_price = Column(Float)      # 追踪日收盘价
+    change_pct = Column(Float)       # 追踪日涨跌幅(%)
+    is_accurate = Column(Boolean)    # 次日收盘涨 = True
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('recommend_date', 'stock_code', name='uq_tracking_date_code'),
+    )
+
+
 class MarketDailyCache(Base):
     """全市场日线缓存 - 每日收盘后由 spot_em() 批量写入，供选股扫描读取"""
     __tablename__ = 'market_daily_cache'
@@ -2039,6 +2062,103 @@ class DatabaseManager:
                     reasons=reasons,
                 ))
             return results
+
+    # ------------------------------------------------------------------
+    # Screener tracking
+    # ------------------------------------------------------------------
+
+    def save_screener_tracking(self, top10: list, recommend_date) -> None:
+        """保存 Top10 推荐记录，附上当日收盘价作为基准。"""
+        with self.get_session() as session:
+            for rank, r in enumerate(top10, start=1):
+                exists = session.query(ScreenerTracking).filter_by(
+                    recommend_date=recommend_date,
+                    stock_code=r.stock_code,
+                ).first()
+                if exists:
+                    continue
+                # 从当日缓存取收盘价
+                cache_row = session.query(MarketDailyCache).filter_by(
+                    trade_date=recommend_date,
+                    stock_code=r.stock_code,
+                ).first()
+                ref_close = cache_row.close if cache_row else None
+                session.add(ScreenerTracking(
+                    recommend_date=recommend_date,
+                    stock_code=r.stock_code,
+                    stock_name=getattr(r, 'stock_name', ''),
+                    rank=rank,
+                    total_score=r.total_score,
+                    ref_close=ref_close,
+                ))
+            session.commit()
+
+    def fill_tracking_prices(self, tracking_date) -> int:
+        """
+        用 tracking_date 当日的市场缓存填充尚未追踪的记录，返回填充数量。
+        通常在每日选股扫描开始前调用，tracking_date = 今日。
+        """
+        filled = 0
+        with self.get_session() as session:
+            pending = session.query(ScreenerTracking).filter(
+                ScreenerTracking.tracking_date.is_(None)
+            ).all()
+            if not pending:
+                return 0
+            for rec in pending:
+                cache_row = session.query(MarketDailyCache).filter_by(
+                    trade_date=tracking_date,
+                    stock_code=rec.stock_code,
+                ).first()
+                if cache_row is None:
+                    continue
+                rec.tracking_date = tracking_date
+                rec.open_price = cache_row.open
+                rec.close_price = cache_row.close
+                rec.change_pct = cache_row.change_pct
+                if rec.ref_close and cache_row.close:
+                    rec.is_accurate = cache_row.close > rec.ref_close
+                elif cache_row.change_pct is not None:
+                    rec.is_accurate = cache_row.change_pct > 0
+                filled += 1
+            session.commit()
+        return filled
+
+    def get_tracking_report(self, recommend_date) -> list:
+        """返回某推荐日的完整追踪记录（已按 rank 排序）。"""
+        with self.get_session() as session:
+            rows = (
+                session.query(ScreenerTracking)
+                .filter_by(recommend_date=recommend_date)
+                .order_by(ScreenerTracking.rank)
+                .all()
+            )
+            return [
+                {
+                    "rank": r.rank,
+                    "stock_code": r.stock_code,
+                    "stock_name": r.stock_name,
+                    "total_score": r.total_score,
+                    "ref_close": r.ref_close,
+                    "tracking_date": r.tracking_date,
+                    "open_price": r.open_price,
+                    "close_price": r.close_price,
+                    "change_pct": r.change_pct,
+                    "is_accurate": r.is_accurate,
+                }
+                for r in rows
+            ]
+
+    def get_latest_tracked_recommend_date(self) -> Optional[date]:
+        """返回最近一次已完成追踪（tracking_date 不为 None）的推荐日期。"""
+        with self.get_session() as session:
+            row = (
+                session.query(ScreenerTracking.recommend_date)
+                .filter(ScreenerTracking.tracking_date.isnot(None))
+                .order_by(ScreenerTracking.recommend_date.desc())
+                .first()
+            )
+            return row[0] if row else None
 
     def upsert_market_daily_cache(self, records: list, trade_date) -> int:
         """
