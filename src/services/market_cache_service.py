@@ -138,6 +138,8 @@ class MarketCacheService:
                     "change_pct": _safe_float(row.get("涨跌幅")),
                     "turnover_rate": _safe_float(row.get("换手率")),  # 新浪无此字段，返回 None
                     "volume_ratio": _safe_float(row.get("量比")),    # 新浪无此字段，返回 None
+                    "pe_ratio": _safe_float(row.get("市盈率-动态")),  # 新浪无此字段，返回 None
+                    "pb_ratio": _safe_float(row.get("市净率")),       # 新浪无此字段，返回 None
                 }
             )
 

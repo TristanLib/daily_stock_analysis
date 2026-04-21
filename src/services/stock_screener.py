@@ -244,47 +244,53 @@ class StockScreener:
         # 4. Technical analysis (pass df_index for RS calculation when available)
         trend_result = trend_analyzer.analyze(df, code, df_index=df_index)
 
-        # 5. Financial data from DB cache or FundamentalAdapter
+        # 5. PE/PB from market cache (latest row already loaded in df)
+        import math as _math
+
+        def _safe_ratio(series, col):
+            if col not in series.index:
+                return None
+            try:
+                v = float(series[col])
+                return None if _math.isnan(v) or v <= 0 else v
+            except (TypeError, ValueError):
+                return None
+
+        latest = df.iloc[-1] if not df.empty else None
+        pe_val = _safe_ratio(latest, 'pe_ratio') if latest is not None else None
+        pb_val = _safe_ratio(latest, 'pb_ratio') if latest is not None else None
+
+        # PE hard filter: skip stocks with PE > 50 (unknown PE passes through)
+        if pe_val is not None and pe_val > 50:
+            logger.debug("跳过 %s：PE=%.1f > 50", code, pe_val)
+            return None
+
+        # 6. Fundamental data (ROE, gross_margin, etc.) from DB snapshot or live adapter
         financial_report = {}
-        valuation = {}
         dividend_yield = None
         try:
-            snap = self._db.get_latest_fundamental_snapshot(code)
+            snap = self._db.get_latest_fundamental_snapshot_by_code(code)
             if snap:
                 if snap.get("earnings"):
                     financial_report = snap["earnings"].get("financial_report", {}) or {}
                     div = snap["earnings"].get("dividend") or {}
                     dividend_yield = div.get("ttm_dividend_yield_pct")
-                if snap.get("valuation"):
-                    valuation = snap["valuation"].get("data") or {}
-            else:
-                from data_provider.fundamental_adapter import FundamentalAdapter
-                adapter = FundamentalAdapter()
-                ctx = adapter.get_fundamental_context(code)
+            elif not cache_only:
+                from data_provider.fundamental_adapter import AkshareFundamentalAdapter
+                adapter = AkshareFundamentalAdapter()
+                ctx = adapter.get_fundamental_bundle(code)
                 if ctx:
                     if ctx.get("earnings"):
                         financial_report = ctx["earnings"].get("financial_report", {}) or {}
                         div = ctx["earnings"].get("dividend") or {}
                         dividend_yield = div.get("ttm_dividend_yield_pct")
-                    if ctx.get("valuation"):
-                        valuation = ctx["valuation"].get("data") or {}
         except Exception as e:
-            logger.debug("获取 %s 财务数据失败（跳过财务评分）: %s", code, e)
+            logger.debug("获取 %s 基本面数据失败（跳过）: %s", code, e)
 
-        # PE hard filter: skip stocks with PE > 50 (unknown PE passes through)
-        pe_ratio = valuation.get("pe_ratio")
-        try:
-            pe_val = float(pe_ratio) if pe_ratio is not None else None
-        except (TypeError, ValueError):
-            pe_val = None
-        if pe_val is not None and pe_val > 50:
-            logger.debug("跳过 %s：PE=%.1f > 50", code, pe_val)
-            return None
-
-        # Merge valuation fields into financial_report for scoring
+        # Merge PE/PB into financial_report for scoring
         merged = {**financial_report,
                   "pe_ratio": pe_val,
-                  "pb_ratio": valuation.get("pb_ratio")}
+                  "pb_ratio": pb_val}
 
         return ScreenerScorer.score(code, name, trend_result, merged, dividend_yield)
 

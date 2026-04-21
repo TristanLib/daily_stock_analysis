@@ -680,6 +680,8 @@ class MarketDailyCache(Base):
     change_pct = Column(Float)   # 涨跌幅(%)
     turnover_rate = Column(Float)  # 换手率(%)
     volume_ratio = Column(Float)   # 量比
+    pe_ratio = Column(Float)       # 市盈率(动态)
+    pb_ratio = Column(Float)       # 市净率
     created_at = Column(DateTime, default=func.now())
 
     __table_args__ = (
@@ -691,6 +693,7 @@ class MarketDailyCache(Base):
 _CACHE_COLUMNS = [
     'trade_date', 'open', 'high', 'low', 'close',
     'volume', 'amount', 'change_pct', 'turnover_rate', 'volume_ratio',
+    'pe_ratio', 'pb_ratio',
 ]
 
 
@@ -1072,6 +1075,37 @@ class DatabaseManager:
                     code,
                     e,
                 )
+                return None
+
+            if row is None:
+                return None
+            try:
+                payload = json.loads(row.payload or "{}")
+                return payload if isinstance(payload, dict) else None
+            except Exception:
+                return None
+
+    def get_latest_fundamental_snapshot_by_code(
+        self,
+        code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        获取指定股票代码的最新基本面快照，不依赖 query_id。
+        供选股扫描器等无 query_id 上下文的场景使用。
+        """
+        if not code:
+            return None
+
+        with self.get_session() as session:
+            try:
+                row = session.execute(
+                    select(FundamentalSnapshot)
+                    .where(FundamentalSnapshot.code == code)
+                    .order_by(desc(FundamentalSnapshot.created_at))
+                    .limit(1)
+                ).scalar_one_or_none()
+            except Exception as e:
+                logger.debug("基本面快照读取失败: code=%s err=%s", code, e)
                 return None
 
             if row is None:
@@ -2191,6 +2225,8 @@ class DatabaseManager:
                     "change_pct": r.get("change_pct"),
                     "turnover_rate": r.get("turnover_rate"),
                     "volume_ratio": r.get("volume_ratio"),
+                    "pe_ratio": r.get("pe_ratio"),
+                    "pb_ratio": r.get("pb_ratio"),
                 }
                 for r in records
                 if r.get("stock_code")
@@ -2228,6 +2264,8 @@ class DatabaseManager:
                     'change_pct': r.change_pct,
                     'turnover_rate': r.turnover_rate,
                     'volume_ratio': r.volume_ratio,
+                    'pe_ratio': r.pe_ratio,
+                    'pb_ratio': r.pb_ratio,
                 }
                 for r in rows
             ]
