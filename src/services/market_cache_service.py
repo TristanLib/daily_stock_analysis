@@ -160,11 +160,10 @@ class MarketCacheService:
     def _fetch_valuation_bulk(self, trade_date) -> int:
         """
         专项拉取全市场 PE/PB，直接请求东方财富 API（只取 f9/f23 字段）。
-        每页 1000 条，约 6 页，比 spot_em 的 69 页快很多。
+        每页 100 条（East Money 实际限制），~60 页，约 20 秒。
         失败时静默跳过，不影响主流程。
         返回成功更新的记录数。
         """
-        import json
         import time
         try:
             import requests as _requests
@@ -173,7 +172,7 @@ class MarketCacheService:
 
         url = "https://82.push2.eastmoney.com/api/qt/clist/get"
         base_params = {
-            "pz": "1000",
+            "pz": "100",
             "po": "1",
             "np": "1",
             "ut": "bd1d9ddb04089700cf9c27f6f7426281",
@@ -185,6 +184,8 @@ class MarketCacheService:
         }
 
         pe_map: dict = {}
+        fetched = 0
+        total = None
         page = 1
         while True:
             params = {**base_params, "pn": str(page)}
@@ -194,17 +195,19 @@ class MarketCacheService:
                 items = (data.get("data") or {}).get("diff") or []
                 if not items:
                     break
+                if total is None:
+                    total = int((data.get("data") or {}).get("total", 0))
                 for item in items:
                     code = str(item.get("f12", "")).strip()
                     pe = _safe_float(item.get("f9"))
                     pb = _safe_float(item.get("f23"))
                     if code:
                         pe_map[code] = (pe, pb)
-                total = (data.get("data") or {}).get("total", 0)
-                if page * 1000 >= total:
+                fetched += len(items)
+                if total and fetched >= total:
                     break
                 page += 1
-                time.sleep(0.3)
+                time.sleep(0.2)
             except Exception as e:
                 logger.warning("_fetch_valuation_bulk page %d 失败: %s", page, e)
                 break
