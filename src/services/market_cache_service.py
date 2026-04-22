@@ -170,7 +170,7 @@ class MarketCacheService:
         except ImportError:
             return 0
 
-        url = "https://82.push2.eastmoney.com/api/qt/clist/get"
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
         base_params = {
             "pz": "100",
             "po": "1",
