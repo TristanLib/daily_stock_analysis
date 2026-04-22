@@ -38,6 +38,7 @@ from sqlalchemy import (
     and_,
     or_,
     delete,
+    update,
     desc,
     func,
 )
@@ -2270,6 +2271,35 @@ class DatabaseManager:
                 for r in rows
             ]
             return pd.DataFrame(data)
+
+    def update_market_cache_valuation(
+        self, pe_map: dict, trade_date
+    ) -> int:
+        """
+        Bulk-update pe_ratio/pb_ratio for a given trade_date.
+        pe_map: {stock_code: (pe_ratio, pb_ratio)}
+        Returns number of rows updated.
+        """
+        if not pe_map:
+            return 0
+        updated = 0
+        with self.session_scope() as session:
+            for code, (pe, pb) in pe_map.items():
+                if pe is None and pb is None:
+                    continue
+                try:
+                    r = session.execute(
+                        update(MarketDailyCache)
+                        .where(
+                            MarketDailyCache.trade_date == trade_date,
+                            MarketDailyCache.stock_code == code,
+                        )
+                        .values(pe_ratio=pe, pb_ratio=pb)
+                    )
+                    updated += r.rowcount or 0
+                except Exception as e:
+                    logger.debug("update_market_cache_valuation error %s: %s", code, e)
+        return updated
 
     def cleanup_old_market_cache(self, keep_days: int = 35) -> int:
         """Delete cache rows older than keep_days. Returns deleted row count."""

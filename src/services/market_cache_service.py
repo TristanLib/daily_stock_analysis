@@ -148,7 +148,71 @@ class MarketCacheService:
         logger.info(
             f"update_today({trade_date}): 写入 {count} 条，清理旧数据 {deleted} 条"
         )
+
+        # 如果降级到了新浪（无 PE/PB），补一次轻量 PE/PB 专项拉取
+        if use_sina:
+            logger.info("update_today: 新浪降级无 PE/PB，启动补充拉取...")
+            pe_count = self._fetch_valuation_bulk(trade_date)
+            logger.info(f"update_today: 补充 PE/PB 完成，更新 {pe_count} 条")
+
         return count
+
+    def _fetch_valuation_bulk(self, trade_date) -> int:
+        """
+        专项拉取全市场 PE/PB，直接请求东方财富 API（只取 f9/f23 字段）。
+        每页 1000 条，约 6 页，比 spot_em 的 69 页快很多。
+        失败时静默跳过，不影响主流程。
+        返回成功更新的记录数。
+        """
+        import json
+        import time
+        try:
+            import requests as _requests
+        except ImportError:
+            return 0
+
+        url = "https://82.push2.eastmoney.com/api/qt/clist/get"
+        base_params = {
+            "pz": "1000",
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f12",
+            "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
+            "fields": "f12,f9,f23",   # 代码, PE, PB only — payload极小
+        }
+
+        pe_map: dict = {}
+        page = 1
+        while True:
+            params = {**base_params, "pn": str(page)}
+            try:
+                resp = _requests.get(url, params=params, timeout=15)
+                data = resp.json()
+                items = (data.get("data") or {}).get("diff") or []
+                if not items:
+                    break
+                for item in items:
+                    code = str(item.get("f12", "")).strip()
+                    pe = _safe_float(item.get("f9"))
+                    pb = _safe_float(item.get("f23"))
+                    if code:
+                        pe_map[code] = (pe, pb)
+                total = (data.get("data") or {}).get("total", 0)
+                if page * 1000 >= total:
+                    break
+                page += 1
+                time.sleep(0.3)
+            except Exception as e:
+                logger.warning("_fetch_valuation_bulk page %d 失败: %s", page, e)
+                break
+
+        if not pe_map:
+            return 0
+
+        return self._db.update_market_cache_valuation(pe_map, trade_date)
 
     # ------------------------------------------------------------------
     # bootstrap
