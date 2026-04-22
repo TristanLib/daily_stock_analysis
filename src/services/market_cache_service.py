@@ -107,6 +107,7 @@ class MarketCacheService:
                 logger.warning(f"spot_em() 第 {attempt + 1} 次调用失败: {exc}")
 
         # 降级到新浪
+        use_efinance = False
         if df is None:
             logger.warning("spot_em() 不可用，降级到新浪 stock_zh_a_spot()")
             try:
@@ -114,34 +115,67 @@ class MarketCacheService:
                 use_sina = True
                 logger.info("stock_zh_a_spot() 获取成功，共 %d 条", len(df))
             except Exception as exc:
-                logger.error(f"stock_zh_a_spot() 也失败: {exc}")
-                raise exc
+                logger.warning(f"stock_zh_a_spot() 也失败: {exc}，降级到 efinance")
+
+        # 最终降级：efinance（本地化，不依赖境外 HTTP 直连）
+        if df is None:
+            try:
+                import efinance as ef
+                df = ef.stock.get_realtime_quotes()
+                use_efinance = True
+                logger.info("efinance.get_realtime_quotes() 获取成功，共 %d 条", len(df))
+            except Exception as exc:
+                logger.error(f"efinance 也失败: {exc}")
+                raise RuntimeError("所有数据源均失败（spot_em / sina / efinance）") from exc
 
         records = []
         for _, row in df.iterrows():
-            raw_code = str(row.get("代码", ""))
-            # 新浪返回带市场前缀的代码（如 sh600519），剥离前两位
-            code = raw_code[2:] if (use_sina and len(raw_code) > 6) else raw_code
-            name = str(row.get("名称", ""))
+            if use_efinance:
+                code = str(row.get("股票代码", "")).strip()
+                name = str(row.get("股票名称", ""))
+            else:
+                raw_code = str(row.get("代码", ""))
+                # 新浪返回带市场前缀的代码（如 sh600519），剥离前两位
+                code = raw_code[2:] if (use_sina and len(raw_code) > 6) else raw_code
+                name = str(row.get("名称", ""))
             if _is_filtered(code, name):
                 continue
-            records.append(
-                {
-                    "stock_code": code,
-                    "stock_name": name,
-                    "open": _safe_float(row.get("今开")),
-                    "high": _safe_float(row.get("最高")),
-                    "low": _safe_float(row.get("最低")),
-                    "close": _safe_float(row.get("最新价")),
-                    "volume": _safe_float(row.get("成交量")),
-                    "amount": _safe_float(row.get("成交额")),
-                    "change_pct": _safe_float(row.get("涨跌幅")),
-                    "turnover_rate": _safe_float(row.get("换手率")),  # 新浪无此字段，返回 None
-                    "volume_ratio": _safe_float(row.get("量比")),    # 新浪无此字段，返回 None
-                    "pe_ratio": _safe_float(row.get("市盈率-动态")),  # 新浪无此字段，返回 None
-                    "pb_ratio": _safe_float(row.get("市净率")),       # 新浪无此字段，返回 None
-                }
-            )
+            if use_efinance:
+                records.append(
+                    {
+                        "stock_code": code,
+                        "stock_name": name,
+                        "open":         _safe_float(row.get("今开")),
+                        "high":         _safe_float(row.get("最高")),
+                        "low":          _safe_float(row.get("最低")),
+                        "close":        _safe_float(row.get("最新价")),
+                        "volume":       _safe_float(row.get("成交量")),
+                        "amount":       _safe_float(row.get("成交额")),
+                        "change_pct":   _safe_float(row.get("涨跌幅")),
+                        "turnover_rate": _safe_float(row.get("换手率")),
+                        "volume_ratio": _safe_float(row.get("量比")),
+                        "pe_ratio":     _safe_float(row.get("动态市盈率")),
+                        "pb_ratio":     None,
+                    }
+                )
+            else:
+                records.append(
+                    {
+                        "stock_code": code,
+                        "stock_name": name,
+                        "open":         _safe_float(row.get("今开")),
+                        "high":         _safe_float(row.get("最高")),
+                        "low":          _safe_float(row.get("最低")),
+                        "close":        _safe_float(row.get("最新价")),
+                        "volume":       _safe_float(row.get("成交量")),
+                        "amount":       _safe_float(row.get("成交额")),
+                        "change_pct":   _safe_float(row.get("涨跌幅")),
+                        "turnover_rate": _safe_float(row.get("换手率")),
+                        "volume_ratio": _safe_float(row.get("量比")),
+                        "pe_ratio":     _safe_float(row.get("市盈率-动态")),
+                        "pb_ratio":     _safe_float(row.get("市净率")),
+                    }
+                )
 
         count = self._db.upsert_market_daily_cache(records, trade_date)
         deleted = self._db.cleanup_old_market_cache(keep_days=35)
@@ -149,11 +183,12 @@ class MarketCacheService:
             f"update_today({trade_date}): 写入 {count} 条，清理旧数据 {deleted} 条"
         )
 
-        # 如果降级到了新浪（无 PE/PB），补一次轻量 PE/PB 专项拉取
-        if use_sina:
-            logger.info("update_today: 新浪降级无 PE/PB，启动补充拉取...")
+        # 新浪无 PE/PB，efinance 无 PB —— 都需要补充 PE/PB 拉取
+        if use_sina or use_efinance:
+            src = "新浪" if use_sina else "efinance"
+            logger.info(f"update_today: {src} 降级，启动 efinance PE 补充拉取...")
             pe_count = self._fetch_valuation_bulk(trade_date)
-            logger.info(f"update_today: 补充 PE/PB 完成，更新 {pe_count} 条")
+            logger.info(f"update_today: 补充 PE 完成，更新 {pe_count} 条")
 
         return count
 
