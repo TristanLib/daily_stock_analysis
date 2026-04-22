@@ -2288,13 +2288,20 @@ class DatabaseManager:
                 if pe is None and pb is None:
                     continue
                 try:
+                    vals = {}
+                    if pe is not None:
+                        vals["pe_ratio"] = pe
+                    if pb is not None:
+                        vals["pb_ratio"] = pb
+                    if not vals:
+                        continue
                     r = session.execute(
                         update(MarketDailyCache)
                         .where(
                             MarketDailyCache.trade_date == trade_date,
                             MarketDailyCache.stock_code == code,
                         )
-                        .values(pe_ratio=pe, pb_ratio=pb)
+                        .values(**vals)
                     )
                     updated += r.rowcount or 0
                 except Exception as e:

@@ -159,59 +159,44 @@ class MarketCacheService:
 
     def _fetch_valuation_bulk(self, trade_date) -> int:
         """
-        专项拉取全市场 PE/PB，直接请求东方财富 API（只取 f9/f23 字段）。
-        每页 100 条（East Money 实际限制），~60 页，约 20 秒。
+        专项拉取全市场 PE，使用 efinance 一次性获取（比 East Money REST API 更稳定）。
+        efinance 返回 动态市盈率 (PE)，无 PB 字段（PB 保持 None，评分按中性 50 处理）。
         失败时静默跳过，不影响主流程。
         返回成功更新的记录数。
         """
-        import time
         try:
-            import requests as _requests
+            import efinance as ef
         except ImportError:
+            logger.warning("_fetch_valuation_bulk: efinance 未安装，跳过")
             return 0
 
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
-        base_params = {
-            "pz": "100",
-            "po": "1",
-            "np": "1",
-            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-            "fltt": "2",
-            "invt": "2",
-            "fid": "f12",
-            "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
-            "fields": "f12,f9,f23",   # 代码, PE, PB only — payload极小
-        }
+        try:
+            df = ef.stock.get_realtime_quotes()
+        except Exception as e:
+            logger.warning("_fetch_valuation_bulk: efinance.get_realtime_quotes() 失败: %s", e)
+            return 0
+
+        if df is None or df.empty:
+            logger.warning("_fetch_valuation_bulk: efinance 返回空数据")
+            return 0
+
+        pe_col = "动态市盈率"
+        code_col = "股票代码"
+        if code_col not in df.columns or pe_col not in df.columns:
+            logger.warning(
+                "_fetch_valuation_bulk: efinance 返回列不含 %s/%s，实际列: %s",
+                code_col, pe_col, list(df.columns),
+            )
+            return 0
 
         pe_map: dict = {}
-        fetched = 0
-        total = None
-        page = 1
-        while True:
-            params = {**base_params, "pn": str(page)}
-            try:
-                resp = _requests.get(url, params=params, timeout=15)
-                data = resp.json()
-                items = (data.get("data") or {}).get("diff") or []
-                if not items:
-                    break
-                if total is None:
-                    total = int((data.get("data") or {}).get("total", 0))
-                for item in items:
-                    code = str(item.get("f12", "")).strip()
-                    pe = _safe_float(item.get("f9"))
-                    pb = _safe_float(item.get("f23"))
-                    if code:
-                        pe_map[code] = (pe, pb)
-                fetched += len(items)
-                if total and fetched >= total:
-                    break
-                page += 1
-                time.sleep(0.2)
-            except Exception as e:
-                logger.warning("_fetch_valuation_bulk page %d 失败: %s", page, e)
-                break
+        for _, row in df.iterrows():
+            code = str(row.get(code_col, "")).strip()
+            pe = _safe_float(row.get(pe_col))
+            if code:
+                pe_map[code] = (pe, None)  # PB 无来源，置 None
 
+        logger.info("_fetch_valuation_bulk: efinance 获取 %d 只股票 PE", len(pe_map))
         if not pe_map:
             return 0
 
