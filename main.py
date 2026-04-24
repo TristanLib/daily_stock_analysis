@@ -364,6 +364,12 @@ def parse_arguments() -> argparse.Namespace:
         help='运行全市场 A 股扫描：Bootstrap 历史缓存（首次）+ 拉取当日数据 + 评分推送 Top 10'
     )
 
+    parser.add_argument(
+        '--morning-brief',
+        action='store_true',
+        help='运行盘前晨报：推送最近追踪报告 + 昨日 Top10 关注列表'
+    )
+
     return parser.parse_args()
 
 
@@ -824,6 +830,28 @@ def main() -> int:
                 f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
                 f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
             )
+            return 0
+
+        # 模式-1: 盘前晨报（一次性触发）
+        if getattr(args, 'morning_brief', False):
+            from src.services.stock_screener import StockScreener
+            from src.notification_sender.telegram_sender import TelegramSender
+            from src.storage import get_db
+            from data_provider.base import DataFetcherManager
+
+            _db = get_db()
+            _tg = TelegramSender(config) if (
+                getattr(config, 'telegram_bot_token', None) and
+                getattr(config, 'telegram_chat_id', None)
+            ) else None
+            screener = StockScreener(
+                config=config,
+                fetcher_manager=DataFetcherManager(),
+                db=_db,
+                telegram_sender=_tg,
+            )
+            screener.run_morning_review()
+            logger.info("[morning-brief] 晨报完成")
             return 0
 
         # 模式0: 全市场扫描（一次性手动触发）
