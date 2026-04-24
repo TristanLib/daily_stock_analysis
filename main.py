@@ -1077,6 +1077,40 @@ def main() -> int:
             except Exception as _e:
                 logger.warning("注册每日选股任务失败: %s", _e)
 
+            # 每日盘前晨报（09:00 北京时间 = 01:00 UTC）
+            def _morning_brief_task():
+                try:
+                    from src.core.trading_calendar import get_open_markets_today
+                    if "cn" not in get_open_markets_today():
+                        logger.info("今日 A 股休市，跳过盘前晨报。")
+                        return
+                    from src.services.stock_screener import StockScreener
+                    from src.notification_sender.telegram_sender import TelegramSender
+                    from src.storage import get_db
+                    from data_provider.base import DataFetcherManager as _DFM
+                    _runtime = _reload_runtime_config()
+                    _tg = TelegramSender(_runtime) if (
+                        _runtime.telegram_bot_token and _runtime.telegram_chat_id
+                    ) else None
+                    screener = StockScreener(
+                        config=_runtime,
+                        fetcher_manager=_DFM(),
+                        db=get_db(),
+                        telegram_sender=_tg,
+                    )
+                    screener.run_morning_review()
+                except Exception as _e:
+                    logger.error("盘前晨报失败: %s", _e)
+                    import traceback
+                    logger.debug(traceback.format_exc())
+
+            try:
+                import schedule as _schedule_lib
+                _schedule_lib.every().day.at("01:00").do(_morning_brief_task)
+                logger.info("已注册盘前晨报任务：每日 01:00 执行（UTC = 09:00 北京时间）")
+            except Exception as _e:
+                logger.warning("注册盘前晨报任务失败: %s", _e)
+
             if getattr(config, 'agent_event_monitor_enabled', False):
                 from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
 
