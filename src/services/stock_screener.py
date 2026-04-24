@@ -17,7 +17,7 @@ import logging
 import random
 import re
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -431,3 +431,65 @@ class StockScreener:
             lines.append(f"📊 综合准确率：{overall:.0f}% ({total_accurate}/{total_valid})")
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Morning brief
+    # ------------------------------------------------------------------
+
+    def run_morning_review(self) -> None:
+        """
+        盘前晨报：推送最近已完成的追踪报告 + 昨日 Top10 关注列表。
+        在 --morning-brief CLI 模式和每日 01:00 UTC 定时任务中调用。
+        若无数据则静默退出。
+        """
+        today = datetime.date.today()
+        prev_date = self._get_prev_trade_date(today)
+        if prev_date is None:
+            logger.info("晨报：market_daily_cache 无历史数据，退出")
+            return
+
+        try:
+            latest_tracking_date = self._db.get_latest_tracking_date()
+            if latest_tracking_date:
+                report = self._build_tracking_report(latest_tracking_date)
+                if report:
+                    self._notify(report)
+        except Exception as e:
+            logger.warning("晨报追踪报告失败: %s", e)
+
+        try:
+            top10 = self._db.get_top_screener_results(prev_date, limit=10)
+            if top10:
+                self._send_morning_reminder(top10, prev_date)
+            else:
+                logger.info("晨报：%s 无扫描结果，跳过关注列表", prev_date)
+        except Exception as e:
+            logger.warning("晨报关注列表推送失败: %s", e)
+
+    def _get_prev_trade_date(self, today: datetime.date) -> Optional[datetime.date]:
+        """Return the most recent trade_date in market_daily_cache before today."""
+        from src.storage import MarketDailyCache
+        try:
+            with self._db.get_session() as session:
+                row = (
+                    session.query(MarketDailyCache.trade_date)
+                    .filter(MarketDailyCache.trade_date < today)
+                    .order_by(MarketDailyCache.trade_date.desc())
+                    .first()
+                )
+                return row[0] if row else None
+        except Exception as e:
+            logger.warning("获取前一交易日失败: %s", e)
+            return None
+
+    def _send_morning_reminder(self, top10: List, scan_date) -> None:
+        """推送昨日 Top10 作为今日盘前关注清单。"""
+        medals = ["🥇", "🥈", "🥉"] + ["  "] * 7
+        lines = [f"📊 今日盘前关注（{scan_date} 扫描）", ""]
+        for i, r in enumerate(top10):
+            reason = r.reasons[0] if r.reasons else "综合评分"
+            lines.append(
+                f"{medals[i]} {r.stock_code} {r.stock_name}"
+                f" | 综合{r.total_score:.0f}分 | {reason}"
+            )
+        self._notify("\n".join(lines))
