@@ -2195,6 +2195,17 @@ class DatabaseManager:
             )
             return row[0] if row else None
 
+    def get_latest_tracking_date(self) -> Optional[date]:
+        """Return the most recent tracking_date where data is filled (not None)."""
+        with self.get_session() as session:
+            row = (
+                session.query(ScreenerTracking.tracking_date)
+                .filter(ScreenerTracking.tracking_date.isnot(None))
+                .order_by(ScreenerTracking.tracking_date.desc())
+                .first()
+            )
+            return row[0] if row else None
+
     def upsert_market_daily_cache(self, records: list, trade_date) -> int:
         """
         Bulk-upsert daily OHLCV records for all stocks on a given trade_date.
