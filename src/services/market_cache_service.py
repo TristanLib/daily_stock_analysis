@@ -194,48 +194,98 @@ class MarketCacheService:
 
     def _fetch_valuation_bulk(self, trade_date) -> int:
         """
-        专项拉取全市场 PE，使用 efinance 一次性获取（比 East Money REST API 更稳定）。
-        efinance 返回 动态市盈率 (PE)，无 PB 字段（PB 保持 None，评分按中性 50 处理）。
+        专项拉取全市场 PE/PB。
+        优先使用 efinance（东方财富，一次批量返回全市场）；
+        若 efinance 不可用（VPS 被墙等），降级到腾讯行情批量接口（支持 PE+PB）。
         失败时静默跳过，不影响主流程。
         返回成功更新的记录数。
         """
+        pe_map = self._fetch_valuation_efinance()
+        if pe_map:
+            logger.info("_fetch_valuation_bulk: efinance 获取 %d 只股票 PE", len(pe_map))
+            return self._db.update_market_cache_valuation(pe_map, trade_date)
+
+        logger.info("_fetch_valuation_bulk: efinance 不可用，降级到腾讯行情接口...")
+        pe_map = self._fetch_valuation_tencent(trade_date)
+        if pe_map:
+            logger.info("_fetch_valuation_bulk: 腾讯接口获取 %d 只股票 PE/PB", len(pe_map))
+            return self._db.update_market_cache_valuation(pe_map, trade_date)
+
+        logger.warning("_fetch_valuation_bulk: 所有 PE 数据源均失败")
+        return 0
+
+    def _fetch_valuation_efinance(self) -> dict:
+        """尝试用 efinance 批量获取全市场 PE。返回 {code: (pe, pb)} 或空 dict。"""
         try:
             import efinance as ef
         except ImportError:
-            logger.warning("_fetch_valuation_bulk: efinance 未安装，跳过")
-            return 0
-
+            return {}
         try:
             df = ef.stock.get_realtime_quotes()
         except Exception as e:
             logger.warning("_fetch_valuation_bulk: efinance.get_realtime_quotes() 失败: %s", e)
-            return 0
-
+            return {}
         if df is None or df.empty:
-            logger.warning("_fetch_valuation_bulk: efinance 返回空数据")
-            return 0
-
-        pe_col = "动态市盈率"
-        code_col = "股票代码"
+            return {}
+        pe_col, code_col = "动态市盈率", "股票代码"
         if code_col not in df.columns or pe_col not in df.columns:
-            logger.warning(
-                "_fetch_valuation_bulk: efinance 返回列不含 %s/%s，实际列: %s",
-                code_col, pe_col, list(df.columns),
-            )
-            return 0
-
+            logger.warning("_fetch_valuation_bulk: efinance 返回列异常: %s", list(df.columns))
+            return {}
         pe_map: dict = {}
         for _, row in df.iterrows():
             code = str(row.get(code_col, "")).strip()
             pe = _safe_float(row.get(pe_col))
             if code:
-                pe_map[code] = (pe, None)  # PB 无来源，置 None
+                pe_map[code] = (pe, None)
+        return pe_map
 
-        logger.info("_fetch_valuation_bulk: efinance 获取 %d 只股票 PE", len(pe_map))
-        if not pe_map:
-            return 0
+    def _fetch_valuation_tencent(self, trade_date) -> dict:
+        """
+        用腾讯行情批量接口获取 PE/PB（不依赖东方财富，VPS 友好）。
+        腾讯接口字段：parts[2]=code, parts[39]=PE, parts[46]=PB。
+        返回 {code: (pe, pb)} 或空 dict。
+        """
+        import time
+        try:
+            import requests as _req
+        except ImportError:
+            logger.warning("_fetch_valuation_tencent: requests 未安装")
+            return {}
 
-        return self._db.update_market_cache_valuation(pe_map, trade_date)
+        codes = self._db.get_market_cache_codes(trade_date)
+        if not codes:
+            logger.warning("_fetch_valuation_tencent: 无法获取当日股票列表")
+            return {}
+
+        def _to_tencent(code: str) -> str:
+            if code.startswith(("6", "5", "11")):
+                return f"sh{code}"
+            if code.startswith(("4", "8")):
+                return f"bj{code}"
+            return f"sz{code}"
+
+        BATCH = 300
+        pe_map: dict = {}
+        for i in range(0, len(codes), BATCH):
+            batch = codes[i:i + BATCH]
+            q = ",".join(_to_tencent(c) for c in batch)
+            try:
+                resp = _req.get(f"http://qt.gtimg.cn/q={q}", timeout=15)
+                for line in resp.text.strip().split("\n"):
+                    if not line.strip():
+                        continue
+                    parts = line.split("~")
+                    if len(parts) > 39 and len(parts[2]) >= 6:
+                        code = parts[2].strip()
+                        pe = _safe_float(parts[39]) if parts[39].strip() else None
+                        pb = _safe_float(parts[46]) if len(parts) > 46 and parts[46].strip() else None
+                        if pe and pe > 0:
+                            pe_map[code] = (pe, pb if pb and pb > 0 else None)
+            except Exception as e:
+                logger.debug("_fetch_valuation_tencent: batch %d error: %s", i, e)
+            time.sleep(0.15)
+
+        return pe_map
 
     # ------------------------------------------------------------------
     # bootstrap

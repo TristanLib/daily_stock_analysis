@@ -2283,6 +2283,16 @@ class DatabaseManager:
             ]
             return pd.DataFrame(data)
 
+    def get_market_cache_codes(self, trade_date) -> list:
+        """Return list of stock_codes present in market_daily_cache for a given trade_date."""
+        with self.session_scope() as session:
+            rows = session.execute(
+                select(MarketDailyCache.stock_code).where(
+                    MarketDailyCache.trade_date == trade_date
+                )
+            ).fetchall()
+            return [r[0] for r in rows]
+
     def update_market_cache_valuation(
         self, pe_map: dict, trade_date
     ) -> int:
