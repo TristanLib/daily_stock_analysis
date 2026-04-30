@@ -171,21 +171,34 @@ class Scheduler:
             logger.info("更新后的下次执行时间: %s", self._get_next_run_time())
 
     def _safe_run_task(self):
-        """安全执行任务（带异常捕获）"""
+        """启动每日分析任务（在独立线程中运行，避免阻塞调度器主循环）"""
         if self._task_callback is None:
             return
 
-        try:
-            logger.info("=" * 50)
-            logger.info(f"定时任务开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info("=" * 50)
+        # Skip if a previous run is still in progress
+        if getattr(self, "_daily_task_thread", None) and self._daily_task_thread.is_alive():
+            logger.warning("上次定时任务仍在运行，本次跳过")
+            return
 
-            self._task_callback()
+        def _run():
+            try:
+                logger.info("=" * 50)
+                logger.info(f"定时任务开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info("=" * 50)
 
-            logger.info(f"定时任务执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                self._task_callback()
 
-        except Exception as e:
-            logger.exception(f"定时任务执行失败: {e}")
+                logger.info(f"定时任务执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+            except Exception as e:
+                logger.exception(f"定时任务执行失败: {e}")
+
+        self._daily_task_thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name="scheduler-daily-task",
+        )
+        self._daily_task_thread.start()
 
     def add_background_task(
         self,

@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 全市场 A 股扫描：新增 `MarketCacheService`，收盘后用 `spot_em()` 单次调用缓存全市场 ~5000 只 OHLCV，首次运行通过 Pytdx TCP 批量 Bootstrap 30 天历史，缓存保留 35 天滚动清理
 - [改进] 筛选器财务评分纳入 PE/PB：增加市盈率硬过滤（PE>50 直接跳过）、PE 软评分（权重 20%）、PB 软评分（权重 10%）；权重重新分配为质量(ROE 20%+毛利率 20%)、成长(营收/净利同比各 10%)、估值(PE 20%+PB 10%)、安全(负债率 10%)；Telegram 通知新增 PE/PB/股息率展示
 - [新功能] 全市场选股评分推送：`StockScreener` 改为优先读缓存（零网络请求），覆盖 SH+SZ 全 A 股（替换原个人股票池），每日 15:30 扫描全市场并推送 Top 10 综合评分
+- [修复] 盘前晨报漏推：`Scheduler._safe_run_task` 改为在独立线程运行每日分析任务，解决分析任务耗时超过 30 分钟时阻塞调度器主循环、导致 01:00 UTC 晨报无法触发的问题；新增并发保护，前次任务未完成时跳过本次触发
 - [新功能] `--market-scan` CLI 参数：支持手动触发一次全市场扫描（Bootstrap + 当日数据更新 + 评分推送），方便首次验证
 - [改进] 定时任务新增 15:05 市场缓存预取阶段（Phase 1），与 15:30 选股扫描（Phase 2）解耦，分析期间无需实时 API 调用
 - [修复] 定时选股任务中 `fetcher_manager` 未定义导致的潜在 NameError（改为在任务内部按需初始化 `DataFetcherManager`）
